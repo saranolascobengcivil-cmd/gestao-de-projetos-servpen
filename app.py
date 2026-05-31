@@ -2077,77 +2077,60 @@ else:
         ORDEM_PRIORIDADE = {"Máxima": 0, "Média": 1, "Mínima": 2, "": 3}
 
         CONFIG_COLUNAS = [
-            {
-                "status_db":  "Em Espera",
-                "label_ui":   "⏳ Em Espera",
-                "css_class":  "card-espera",
-                "cor_borda":  "#7c3aed",
-                "cor_fundo":  "#3b1f6e",
-                "ordenar_por_prioridade": True,
-            },
-            {
-                "status_db":  "Ativo",
-                "label_ui":   "🚀 Em Execução",
-                "css_class":  "card-ativo",
-                "cor_borda":  "#00d4ff",
-                "cor_fundo":  "#0056b3",
-                "ordenar_por_prioridade": False,
-            },
-            {
-                "status_db":  "🛑 Parado",
-                "label_ui":   "🛑 Parados",
-                "css_class":  "card-parado",
-                "cor_borda":  "#ff9f43",
-                "cor_fundo":  "#d35400",
-                "ordenar_por_prioridade": False,
-            },
-            {
-                "status_db":  "Cancelado",
-                "label_ui":   "❌ Cancelados",
-                "css_class":  "card-cancelado",
-                "cor_borda":  "#ff4d4d",
-                "cor_fundo":  "#801a1a",
-                "ordenar_por_prioridade": False,
-            },
-            {
-                "status_db":  "Concluído",
-                "label_ui":   "✅ Concluídos",
-                "css_class":  "card-concluido",
-                "cor_borda":  "#4dff4d",
-                "cor_fundo":  "#1a661a",
-                "ordenar_por_prioridade": False,
-            },
+            {"status_db": "Em Espera",  "label_ui": "⏳ Em Espera",
+             "card_cls": "kc-espera",   "ordenar_por_prioridade": True},
+            {"status_db": "Ativo",      "label_ui": "🚀 Em Execução",
+             "card_cls": "kc-ativo",    "ordenar_por_prioridade": False},
+            {"status_db": "🛑 Parado",  "label_ui": "🛑 Parados",
+             "card_cls": "kc-parado",   "ordenar_por_prioridade": False},
+            {"status_db": "Cancelado",  "label_ui": "❌ Cancelados",
+             "card_cls": "kc-cancel",   "ordenar_por_prioridade": False},
+            {"status_db": "Concluído",  "label_ui": "✅ Concluídos",
+             "card_cls": "kc-conc",     "ordenar_por_prioridade": False},
         ]
 
-        # CSS extra para o card "Em Espera"
+        # CSS uniforme para os cards do Kanban — compactos, mesma estrutura
+        # pras 5 colunas, só varia background/border (via classe específica).
         st.markdown("""
         <style>
-        .card-espera {
-            background-color: #3b1f6e;
-            color: white;
-            padding: 18px;
-            border-radius: 12px;
-            border-left: 10px solid #7c3aed;
-            margin-bottom: 15px;
+        .kc {
+            padding: 8px 10px;
+            border-radius: 8px;
+            border-left: 4px solid var(--kc-border, #888);
+            margin-bottom: 6px;
+            font-size: 12px;
+            line-height: 1.35;
+            color: #fff;
+            background: var(--kc-bg, #444);
+            overflow: hidden;
         }
-        .badge-prioridade-maxima {
-            background: #ef4444; color: #fff;
-            font-size: 10px; font-weight: 700;
-            padding: 2px 8px; border-radius: 8px;
-            display: inline-block; margin-bottom: 4px;
-        }
-        .badge-prioridade-media {
-            background: #f59e0b; color: #fff;
-            font-size: 10px; font-weight: 700;
-            padding: 2px 8px; border-radius: 8px;
-            display: inline-block; margin-bottom: 4px;
-        }
-        .badge-prioridade-minima {
-            background: #10b981; color: #fff;
-            font-size: 10px; font-weight: 700;
-            padding: 2px 8px; border-radius: 8px;
-            display: inline-block; margin-bottom: 4px;
-        }
+        .kc-espera { --kc-bg:#3b1f6e; --kc-border:#7c3aed; }
+        .kc-ativo  { --kc-bg:#0d3d75; --kc-border:#00d4ff; }
+        .kc-parado { --kc-bg:#7c3a0a; --kc-border:#ff9f43; }
+        .kc-cancel { --kc-bg:#5c1414; --kc-border:#ff4d4d; }
+        .kc-conc   { --kc-bg:#143d14; --kc-border:#4dff4d; }
+        .kc .row1 { display:flex; gap:4px; flex-wrap:wrap; align-items:center;
+                    margin-bottom: 3px; min-height: 14px; }
+        .kc .nome { font-weight:700; font-size:12.5px; margin:2px 0;
+                    word-break: break-word; }
+        .kc .meta { font-size:10.5px; opacity:.85; margin-top:2px;
+                    word-break: break-word; }
+        .kc .tags { margin-top:4px; line-height:1.6; }
+        .kc-pri-max  { background:#ef4444; color:#fff; font-size:9px;
+                       font-weight:700; padding:1px 6px; border-radius:5px;
+                       letter-spacing:.3px; }
+        .kc-pri-med  { background:#f59e0b; color:#fff; font-size:9px;
+                       font-weight:700; padding:1px 6px; border-radius:5px;
+                       letter-spacing:.3px; }
+        .kc-pri-min  { background:#10b981; color:#fff; font-size:9px;
+                       font-weight:700; padding:1px 6px; border-radius:5px;
+                       letter-spacing:.3px; }
+        .kc-alerta   { background:#ff4d4d; color:#fff; font-size:9px;
+                       font-weight:700; padding:1px 6px; border-radius:5px;
+                       letter-spacing:.3px; }
+        /* Header das colunas: compacto */
+        .kc-col-header { font-size: 13px; font-weight:700; margin: 0 0 6px;
+                         padding: 4px 2px; border-bottom: 1px solid rgba(255,255,255,.08); }
         </style>
         """, unsafe_allow_html=True)
 
@@ -2169,42 +2152,38 @@ else:
                     )
                     items = items.sort_values('_ord_pri')
 
-                st.markdown(f"### {cfg['label_ui']} ({len(items)})")
+                st.markdown(
+                    f"<div class='kc-col-header'>{cfg['label_ui']} "
+                    f"<span style='opacity:.6;font-weight:500;'>({len(items)})</span></div>",
+                    unsafe_allow_html=True,
+                )
 
                 if items.empty:
                     st.markdown(
-                        f"<div style='color:#6b7280;font-size:.8rem;"
-                        f"border:1px dashed rgba(255,255,255,0.1);"
-                        f"border-radius:8px;padding:12px;text-align:center;'>"
-                        f"Nenhum projeto</div>",
+                        "<div style='color:#6b7280;font-size:11px;"
+                        "border:1px dashed rgba(255,255,255,0.1);"
+                        "border-radius:6px;padding:8px;text-align:center;'>"
+                        "Nenhum projeto</div>",
                         unsafe_allow_html=True,
                     )
 
                 for _, p in items.iterrows():
-                    # Alerta de pendências abertas
+                    # Alerta de pendências abertas (só badge compacto na row1)
                     pend_abertas  = df_d[(df_d['projeto_id'] == p['id']) & (df_d['resolvido'] == 0)] \
                                     if not df_d.empty else pd.DataFrame()
                     texto_diario  = " ".join(pend_abertas['executado'].astype(str)) \
                                     if not pend_abertas.empty else ""
                     tem_trava     = any(x in texto_diario for x in ["Impedimento","Dúvida","🛑","❓"])
+                    badge_alerta  = "<span class='kc-alerta'>⚠ TRAVA</span>" if tem_trava else ""
 
-                    alerta_html = ""
-                    if tem_trava:
-                        alerta_html = (
-                            '<div style="background:#ff4d4d;color:white;padding:5px;'
-                            'border-radius:5px;font-size:11px;font-weight:bold;'
-                            'margin-bottom:8px;text-align:center;">'
-                            '⚠️ PENDÊNCIA ABERTA</div>'
-                        )
-
-                    # Badge de prioridade (útil especialmente na coluna Em Espera)
+                    # Prioridade compacta
                     pri = str(p.get('prioridade', '')).strip()
                     if pri == 'Máxima':
-                        badge_pri = "<span class='badge-prioridade-maxima'>▲ MÁXIMA</span>"
+                        badge_pri = "<span class='kc-pri-max'>▲ MÁX</span>"
                     elif pri == 'Média':
-                        badge_pri = "<span class='badge-prioridade-media'>◆ MÉDIA</span>"
+                        badge_pri = "<span class='kc-pri-med'>◆ MÉD</span>"
                     elif pri == 'Mínima':
-                        badge_pri = "<span class='badge-prioridade-minima'>▼ MÍNIMA</span>"
+                        badge_pri = "<span class='kc-pri-min'>▼ MÍN</span>"
                     else:
                         badge_pri = ""
 
@@ -2212,88 +2191,77 @@ else:
 
                     # Chips de tags (small=True pra caber no card compacto)
                     _tags_html = _render_tag_chips(p.get('tags'), small=True)
-                    _tags_wrap = (
-                        f'<div style="margin-top:6px;">{_tags_html}</div>'
-                        if _tags_html else ''
-                    )
+                    _tags_wrap = f'<div class="tags">{_tags_html}</div>' if _tags_html else ''
 
                     card_html = (
-                        f'<div class="{cfg["css_class"]}">'
-                        f'{alerta_html}'
-                        f'{badge_pri}'
-                        f'<div style="font-weight:700;font-size:.9rem;margin:4px 0 6px;">'
-                        f'{p["projeto"]}</div>'
-                        f'<div style="font-size:.78rem;opacity:.9;">'
-                        f'👤 {p["projetista"]}<br>'
-                        f'📅 {prazo_str}</div>'
+                        f'<div class="kc {cfg["card_cls"]}">'
+                        f'<div class="row1">{badge_alerta}{badge_pri}</div>'
+                        f'<div class="nome">{p["projeto"]}</div>'
+                        f'<div class="meta">👤 {p["projetista"]} · 📅 {prazo_str}</div>'
                         f'{_tags_wrap}'
                         f'</div>'
                     )
                     st.markdown(card_html, unsafe_allow_html=True)
 
-                    # ── Botões de ação rápida ─────────────────────────────
-                    b1, b2, b3 = st.columns(3)
+                    # ── Ações em popover único (3 botões grandes viravam ruído) ──
                     status_db = cfg['status_db']
+                    with st.popover("⚙️", use_container_width=True,
+                                    help="Ações e detalhes"):
+                        if st.button("🔍 Abrir detalhes / editar",
+                                     key=f"ver_{p['id']}",
+                                     use_container_width=True):
+                            st.session_state.projeto_em_edicao = p['id']
+                            st.rerun()
 
-                    if _pode_editar():
-                        if status_db == "Em Espera":
-                            # Botão principal: Ativar → Em Execução
-                            if b1.button("▶️", key=f"ativ_{p['id']}",
-                                         help="Mover para Em Execução",
-                                         use_container_width=True):
-                                db.atualizar_campo_projeto(p['id'], "status", "Ativo")
-                                db.log_aud(st.session_state.usuario, 'status', 'projeto',
-                                           p['id'], "Em Espera → Ativo")
-                                _invalidar_dados(); st.rerun()
-                            if b2.button("❌", key=f"canc_esp_{p['id']}",
-                                         help="Cancelar projeto",
-                                         use_container_width=True):
-                                db.atualizar_campo_projeto(p['id'], "status", "Cancelado")
-                                _invalidar_dados(); st.rerun()
-
-                        elif status_db == "Ativo":
-                            if b1.button("⏸️", key=f"p_{p['id']}",
-                                         help="Pausar projeto",
-                                         use_container_width=True):
-                                db.atualizar_campo_projeto(p['id'], "status", "🛑 Parado")
-                                _invalidar_dados(); st.rerun()
-                            if b2.button("✅", key=f"f_{p['id']}",
-                                         help="Concluir projeto",
-                                         use_container_width=True):
-                                db.atualizar_campo_projeto(p['id'], "status", "Concluído")
-                                _invalidar_dados(); st.rerun()
-
-                        elif status_db == "🛑 Parado":
-                            if b1.button("▶️", key=f"r_{p['id']}",
-                                         help="Retomar → Em Execução",
-                                         use_container_width=True):
-                                db.atualizar_campo_projeto(p['id'], "status", "Ativo")
-                                _invalidar_dados(); st.rerun()
-                            if b2.button("❌", key=f"c_{p['id']}",
-                                         help="Cancelar",
-                                         use_container_width=True):
-                                db.atualizar_campo_projeto(p['id'], "status", "Cancelado")
-                                _invalidar_dados(); st.rerun()
-
-                        elif status_db == "Cancelado":
-                            if b1.button("🔓", key=f"re_{p['id']}",
-                                         help="Reativar → Em Espera",
-                                         use_container_width=True):
-                                db.atualizar_campo_projeto(p['id'], "status", "Em Espera")
-                                _invalidar_dados(); st.rerun()
-
-                        elif status_db == "Concluído":
-                            if b1.button("🔓", key=f"reabrir_{p['id']}",
-                                         help="Reabrir → Em Execução",
-                                         use_container_width=True):
-                                db.atualizar_campo_projeto(p['id'], "status", "Ativo")
-                                _invalidar_dados(); st.rerun()
-
-                    # Botão de detalhes (sempre visível)
-                    if b3.button("🔍", key=f"ver_{p['id']}",
-                                 help="Ver detalhes / editar",
-                                 use_container_width=True):
-                        st.session_state.projeto_em_edicao = p['id']
+                        if _pode_editar():
+                            st.divider()
+                            if status_db == "Em Espera":
+                                if st.button("▶️ Mover para Em Execução",
+                                             key=f"ativ_{p['id']}",
+                                             use_container_width=True):
+                                    db.atualizar_campo_projeto(p['id'], "status", "Ativo")
+                                    db.log_aud(st.session_state.usuario, 'status',
+                                               'projeto', p['id'], "Em Espera → Ativo")
+                                    _invalidar_dados(); st.rerun()
+                                if st.button("❌ Cancelar projeto",
+                                             key=f"canc_esp_{p['id']}",
+                                             use_container_width=True):
+                                    db.atualizar_campo_projeto(p['id'], "status", "Cancelado")
+                                    _invalidar_dados(); st.rerun()
+                            elif status_db == "Ativo":
+                                if st.button("⏸️ Pausar projeto",
+                                             key=f"p_{p['id']}",
+                                             use_container_width=True):
+                                    db.atualizar_campo_projeto(p['id'], "status", "🛑 Parado")
+                                    _invalidar_dados(); st.rerun()
+                                if st.button("✅ Concluir projeto",
+                                             key=f"f_{p['id']}",
+                                             use_container_width=True):
+                                    db.atualizar_campo_projeto(p['id'], "status", "Concluído")
+                                    _invalidar_dados(); st.rerun()
+                            elif status_db == "🛑 Parado":
+                                if st.button("▶️ Retomar → Em Execução",
+                                             key=f"r_{p['id']}",
+                                             use_container_width=True):
+                                    db.atualizar_campo_projeto(p['id'], "status", "Ativo")
+                                    _invalidar_dados(); st.rerun()
+                                if st.button("❌ Cancelar",
+                                             key=f"c_{p['id']}",
+                                             use_container_width=True):
+                                    db.atualizar_campo_projeto(p['id'], "status", "Cancelado")
+                                    _invalidar_dados(); st.rerun()
+                            elif status_db == "Cancelado":
+                                if st.button("🔓 Reativar → Em Espera",
+                                             key=f"re_{p['id']}",
+                                             use_container_width=True):
+                                    db.atualizar_campo_projeto(p['id'], "status", "Em Espera")
+                                    _invalidar_dados(); st.rerun()
+                            elif status_db == "Concluído":
+                                if st.button("🔓 Reabrir → Em Execução",
+                                             key=f"reabrir_{p['id']}",
+                                             use_container_width=True):
+                                    db.atualizar_campo_projeto(p['id'], "status", "Ativo")
+                                    _invalidar_dados(); st.rerun()
 
         # --- CENTRAL DE EDIÇÃO (COM TODO O DETALHAMENTO VOLTADO) ---
         if 'projeto_em_edicao' in st.session_state:
