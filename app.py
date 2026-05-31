@@ -4183,89 +4183,81 @@ else:
             df_agenda = pd.DataFrame(columns=['id','titulo','tipo','data_inicio',
                                             'data_fim','responsaveis','descricao','local'])
 
-        # ── PRÓXIMOS 7 DIAS (atalho de leitura no topo da aba) ──────
-        # Lista os próximos eventos do usuário em ordem cronológica.
-        # Gestor vê todos; outros perfis veem só aqueles em que estão envolvidos.
-        # Click "Abrir" → popula agenda_edit_id pra rolar pro form em modo edit.
-        with st.container(border=True):
-            _hoje7 = datetime.now().date()
-            _limite7 = _hoje7 + pd.Timedelta(days=7)
-            _df_7 = df_agenda.copy() if not df_agenda.empty else df_agenda
-            if not _df_7.empty:
-                _df_7['_di'] = pd.to_datetime(_df_7['data_inicio'], errors='coerce').dt.date
-                _df_7['_df'] = pd.to_datetime(_df_7['data_fim'],    errors='coerce').dt.date
-                # mantém eventos que TOCAM a janela [hoje, hoje+7d]
-                _df_7 = _df_7[
-                    _df_7['_di'].notna()
-                    & (_df_7['_df'].fillna(_df_7['_di']) >= _hoje7)
-                    & (_df_7['_di'] <= _limite7)
+        # ── MÉTRICAS NO TOPO (4 cards) ────────────────────────────────
+        # Cálculo sobre o df_agenda inteiro, mas respeitando visibilidade
+        # por perfil (Gestor vê tudo, outros só os seus).
+        _hoje_ag      = datetime.now().date()
+        _limite_7d_ag = _hoje_ag + pd.Timedelta(days=7)
+        _ini_mes_ag   = _hoje_ag.replace(day=1)
+        import calendar as _cal_ag
+        _fim_mes_ag   = _hoje_ag.replace(
+            day=_cal_ag.monthrange(_hoje_ag.year, _hoje_ag.month)[1]
+        )
+
+        _df_ag_visivel = df_agenda.copy() if not df_agenda.empty else df_agenda
+        if not _df_ag_visivel.empty:
+            _df_ag_visivel['_di'] = pd.to_datetime(
+                _df_ag_visivel['data_inicio'], errors='coerce'
+            ).dt.date
+            _df_ag_visivel['_df'] = pd.to_datetime(
+                _df_ag_visivel['data_fim'], errors='coerce'
+            ).dt.date
+            if perfil_atual != "Gestor":
+                _df_ag_visivel = _df_ag_visivel[
+                    _df_ag_visivel['responsaveis'].astype(str)
+                    .str.contains(usuario_atual, na=False)
                 ]
-                if perfil_atual != "Gestor":
-                    _df_7 = _df_7[
-                        _df_7['responsaveis'].astype(str).str.contains(usuario_atual, na=False)
-                    ]
-                _df_7 = _df_7.sort_values('_di').head(5)
 
-            _cab1, _cab2 = st.columns([4, 1])
-            _cab1.markdown(
-                f"### 📌 Próximos 7 dias "
-                f"<span style='font-size:.75rem;color:#94a3b8;font-weight:400;'>"
-                f"({'sua agenda' if perfil_atual != 'Gestor' else 'agenda da equipe'})</span>",
-                unsafe_allow_html=True,
-            )
-            _cab2.caption(f"até {_limite7.strftime('%d/%m')}")
+        def _toca_janela(row, ini, fim):
+            di, df_ = row.get('_di'), row.get('_df') or row.get('_di')
+            return (di is not None and df_ is not None
+                    and df_ >= ini and di <= fim)
 
-            if df_agenda.empty or _df_7.empty:
-                st.markdown(
-                    "<div style='color:#6b7280;font-size:13px;text-align:center;padding:8px;'>"
-                    "Nenhum compromisso nos próximos 7 dias.</div>",
-                    unsafe_allow_html=True,
+        if _df_ag_visivel.empty:
+            _qtd_7d = _qtd_visitas_mes = _qtd_ausentes_hoje = _qtd_total_mes = 0
+        else:
+            _qtd_7d = int(_df_ag_visivel.apply(
+                lambda r: _toca_janela(r, _hoje_ag, _limite_7d_ag), axis=1
+            ).sum())
+            _qtd_visitas_mes = int(((_df_ag_visivel['tipo'] == 'Visita Técnica')
+                & _df_ag_visivel.apply(
+                    lambda r: _toca_janela(r, _ini_mes_ag, _fim_mes_ag), axis=1
+                )).sum())
+            _qtd_ausentes_hoje = int((
+                _df_ag_visivel['tipo'].isin(['Férias','Licença','Folga'])
+                & _df_ag_visivel.apply(
+                    lambda r: _toca_janela(r, _hoje_ag, _hoje_ag), axis=1
                 )
-            else:
-                # Paleta consistente com o calendário abaixo
-                _TIPO_COR_TOPO = {
-                    "Visita Técnica": "#2563eb",
-                    "Reunião":        "#7c3aed",
-                    "Férias":         "#059669",
-                    "Licença":        "#d97706",
-                    "Folga":          "#6b7280",
-                }
-                _TIPO_ICONE_TOPO = {
-                    "Visita Técnica": "🏗️", "Reunião": "🤝",
-                    "Férias": "🏖️", "Licença": "🏥", "Folga": "😴",
-                }
-                for _, _ev in _df_7.iterrows():
-                    _di = _ev['_di']
-                    _df_ = _ev['_df'] or _di
-                    _dias_ate = (_di - _hoje7).days
-                    _quando = (
-                        "**Hoje**" if _dias_ate == 0
-                        else "Amanhã" if _dias_ate == 1
-                        else f"em {_dias_ate} dias"
-                    )
-                    _cor = _TIPO_COR_TOPO.get(str(_ev.get('tipo','')), '#475569')
-                    _ico = _TIPO_ICONE_TOPO.get(str(_ev.get('tipo','')), '📅')
-                    _periodo = (
-                        _di.strftime('%d/%m')
-                        if _di == _df_
-                        else f"{_di.strftime('%d/%m')}–{_df_.strftime('%d/%m')}"
-                    )
-                    _c1, _c2 = st.columns([8, 1])
-                    _c1.markdown(
-                        f"<div style='padding:6px 4px;border-left:3px solid {_cor};"
-                        f"padding-left:10px;margin-bottom:4px;'>"
-                        f"<b>{_ico} {_ev['titulo']}</b> "
-                        f"<span style='color:#94a3b8;font-size:.78rem;'>· {_quando} ({_periodo})</span><br>"
-                        f"<span style='font-size:.75rem;color:#cbd5e1;'>"
-                        f"👥 {_ev.get('responsaveis','') or '—'}"
-                        f"{' · 📍 ' + str(_ev.get('local','')) if _ev.get('local') else ''}"
-                        f"</span></div>",
-                        unsafe_allow_html=True,
-                    )
-                    if _c2.button("Abrir", key=f"prox7_{_ev['id']}",
-                                  help="Abre este compromisso no formulário pra editar"):
-                        st.session_state['agenda_edit_id'] = int(_ev['id'])
-                        st.rerun()
+            ).sum())
+            _qtd_total_mes = int(_df_ag_visivel.apply(
+                lambda r: _toca_janela(r, _ini_mes_ag, _fim_mes_ag), axis=1
+            ).sum())
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("📌 Próximos 7 dias", _qtd_7d,
+                  help="Eventos que tocam a janela de hoje até hoje+7d.")
+        m2.metric("🏗️ Visitas no mês", _qtd_visitas_mes,
+                  help="Eventos do tipo Visita Técnica neste mês.")
+        m3.metric("🏖️ Ausentes hoje", _qtd_ausentes_hoje,
+                  delta="férias/licença/folga", delta_color="off",
+                  help="Membros em ausência registrada (Férias/Licença/Folga) hoje.")
+        m4.metric("📅 Total no mês", _qtd_total_mes,
+                  help="Todos os compromissos que tocam o mês atual.")
+
+        st.divider()
+
+        # ── TOGGLE DE VISÃO ──────────────────────────────────────────
+        # Mensal: calendário HTML grid 7 colunas (visualização espacial)
+        # Semanal: 7 cards horizontais com eventos por dia (detalhe semanal)
+        # Lista: tabela vertical filtrada (operacional, edit/delete)
+        # Resumo: dashboard executivo (próximos 7d, stats, top membros)
+        visao_ag = _pill_select(
+            st, "Visão da Agenda",
+            options=["Mensal", "Semanal", "Lista", "Resumo"],
+            default="Mensal",
+            key="agenda_visao",
+            label_visibility="collapsed",
+        ) or "Mensal"
 
         # ── exportar .ics ─────────────────────────────────────────────
         if not df_agenda.empty:
@@ -4283,137 +4275,381 @@ else:
         st.divider()
 
         # ════════════════════════════════════════════════════════════
-        #  LAYOUT PRINCIPAL: calendário (esq) | cadastro (dir)
+        #  LAYOUT PRINCIPAL: visão escolhida (esq) | cadastro (dir)
         # ════════════════════════════════════════════════════════════
         col_cal, col_form = st.columns([2, 1], gap="large")
 
-        # ── CALENDÁRIO INTERATIVO (HTML puro, sem dependência nova) ──
+        # Paleta unificada (usada em todas as visões)
+        TIPO_COR = {
+            "Visita Técnica": "#2563eb",
+            "Reunião":        "#7c3aed",
+            "Férias":         "#059669",
+            "Licença":        "#d97706",
+            "Folga":          "#6b7280",
+        }
+        TIPO_ICONE = {
+            "Visita Técnica": "🏗️", "Reunião": "🤝",
+            "Férias": "🏖️", "Licença": "🏥", "Folga": "😴",
+        }
+
+        # ── RAMIFICA POR VISÃO ───────────────────────────────────────
         with col_cal:
-            st.subheader("🗓️ Calendário do Mês")
+            if visao_ag == "Mensal":
+                st.subheader("🗓️ Calendário do Mês")
 
-            # Controle de mês/ano via session_state
-            if 'agenda_ano'  not in st.session_state: st.session_state.agenda_ano  = datetime.now().year
-            if 'agenda_mes'  not in st.session_state: st.session_state.agenda_mes  = datetime.now().month
+                # Controle de mês/ano via session_state
+                if 'agenda_ano'  not in st.session_state: st.session_state.agenda_ano  = datetime.now().year
+                if 'agenda_mes'  not in st.session_state: st.session_state.agenda_mes  = datetime.now().month
 
-            nav1, nav2, nav3 = st.columns([1, 2, 1])
-            if nav1.button("◀ Anterior", use_container_width=True, key="cal_prev"):
-                if st.session_state.agenda_mes == 1:
-                    st.session_state.agenda_mes = 12; st.session_state.agenda_ano -= 1
-                else:
-                    st.session_state.agenda_mes -= 1
-            if nav3.button("Próximo ▶", use_container_width=True, key="cal_next"):
-                if st.session_state.agenda_mes == 12:
-                    st.session_state.agenda_mes = 1; st.session_state.agenda_ano += 1
-                else:
-                    st.session_state.agenda_mes += 1
+                nav1, nav2, nav3 = st.columns([1, 2, 1])
+                if nav1.button("◀ Anterior", use_container_width=True, key="cal_prev"):
+                    if st.session_state.agenda_mes == 1:
+                        st.session_state.agenda_mes = 12; st.session_state.agenda_ano -= 1
+                    else:
+                        st.session_state.agenda_mes -= 1
+                if nav3.button("Próximo ▶", use_container_width=True, key="cal_next"):
+                    if st.session_state.agenda_mes == 12:
+                        st.session_state.agenda_mes = 1; st.session_state.agenda_ano += 1
+                    else:
+                        st.session_state.agenda_mes += 1
 
-            import calendar as _cal
-            ano_atual = st.session_state.agenda_ano
-            mes_atual = st.session_state.agenda_mes
-            MESES_PT = ['', 'Janeiro','Fevereiro','Março','Abril','Maio','Junho',
-                        'Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
-            nav2.markdown(
-                f"<h3 style='text-align:center;margin:0;padding:6px 0;'>"
-                f"{MESES_PT[mes_atual]} {ano_atual}</h3>",
-                unsafe_allow_html=True,
-            )
+                import calendar as _cal
+                ano_atual = st.session_state.agenda_ano
+                mes_atual = st.session_state.agenda_mes
+                MESES_PT = ['', 'Janeiro','Fevereiro','Março','Abril','Maio','Junho',
+                            'Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
+                nav2.markdown(
+                    f"<h3 style='text-align:center;margin:0;padding:6px 0;'>"
+                    f"{MESES_PT[mes_atual]} {ano_atual}</h3>",
+                    unsafe_allow_html=True,
+                )
 
-            # Monta mapa: dia → lista de eventos
-            eventos_mes: dict = {}
-            if not df_agenda.empty:
-                df_tmp = df_agenda.copy()
-                df_tmp['di'] = pd.to_datetime(df_tmp['data_inicio'], errors='coerce')
-                df_tmp['df'] = pd.to_datetime(df_tmp['data_fim'],    errors='coerce')
-                # filtro por visibilidade
-                if perfil_atual != "Gestor":
-                    df_tmp = df_tmp[df_tmp['responsaveis'].str.contains(usuario_atual, na=False)]
-                for _, ev in df_tmp.iterrows():
-                    if pd.isna(ev['di']): continue
-                    d = ev['di'].date()
-                    fim = ev['df'].date() if not pd.isna(ev['df']) else d
-                    cur = d
-                    while cur <= fim:
-                        if cur.year == ano_atual and cur.month == mes_atual:
-                            eventos_mes.setdefault(cur.day, []).append(ev)
-                        cur += pd.Timedelta(days=1)
+                # Monta mapa: dia → lista de eventos
+                eventos_mes: dict = {}
+                if not df_agenda.empty:
+                    df_tmp = df_agenda.copy()
+                    df_tmp['di'] = pd.to_datetime(df_tmp['data_inicio'], errors='coerce')
+                    df_tmp['df'] = pd.to_datetime(df_tmp['data_fim'],    errors='coerce')
+                    # filtro por visibilidade
+                    if perfil_atual != "Gestor":
+                        df_tmp = df_tmp[df_tmp['responsaveis'].str.contains(usuario_atual, na=False)]
+                    for _, ev in df_tmp.iterrows():
+                        if pd.isna(ev['di']): continue
+                        d = ev['di'].date()
+                        fim = ev['df'].date() if not pd.isna(ev['df']) else d
+                        cur = d
+                        while cur <= fim:
+                            if cur.year == ano_atual and cur.month == mes_atual:
+                                eventos_mes.setdefault(cur.day, []).append(ev)
+                            cur += pd.Timedelta(days=1)
 
-            # Paleta por tipo
-            TIPO_COR = {
-                "Visita Técnica": "#2563eb",
-                "Reunião":        "#7c3aed",
-                "Férias":         "#059669",
-                "Licença":        "#d97706",
-                "Folga":          "#6b7280",
-            }
+                # Paleta por tipo
+                TIPO_COR = {
+                    "Visita Técnica": "#2563eb",
+                    "Reunião":        "#7c3aed",
+                    "Férias":         "#059669",
+                    "Licença":        "#d97706",
+                    "Folga":          "#6b7280",
+                }
 
-            # Gera HTML do calendário
-            primeiro_dia, total_dias = _cal.monthrange(ano_atual, mes_atual)
-            hoje = datetime.now().date()
+                # Gera HTML do calendário
+                primeiro_dia, total_dias = _cal.monthrange(ano_atual, mes_atual)
+                hoje = datetime.now().date()
 
-            html_cal = """
-            <style>
-            .srv-cal { width:100%; border-collapse:separate; border-spacing:3px; font-family:'Segoe UI',sans-serif; }
-            .srv-cal th { background:#1e3a5f; color:#93c5fd; font-size:.75rem; font-weight:600;
-                        letter-spacing:1px; padding:8px 4px; border-radius:4px; text-align:center; }
-            .srv-cal td { vertical-align:top; background:rgba(255,255,255,0.03);
-                        border:1px solid rgba(255,255,255,0.06); border-radius:6px;
-                        padding:4px; min-height:72px; width:14.28%; }
-            .srv-cal td.hoje { border:2px solid #3b82f6 !important; background:rgba(59,130,246,0.08); }
-            .srv-cal td.vazio { background:transparent; border:none; }
-            .dia-num { font-size:.8rem; font-weight:700; color:#94a3b8; margin-bottom:3px; }
-            .dia-num.hoje-num { color:#60a5fa; font-size:.9rem; }
-            .ev-pill { font-size:.65rem; font-weight:600; color:#fff; padding:1px 5px;
-                    border-radius:10px; margin-bottom:2px; white-space:nowrap;
-                    overflow:hidden; text-overflow:ellipsis; display:block; }
-            </style>
-            <table class="srv-cal"><thead><tr>
-            <th>DOM</th><th>SEG</th><th>TER</th><th>QUA</th><th>QUI</th><th>SEX</th><th>SÁB</th>
-            </tr></thead><tbody><tr>
-            """
-            # dias em branco antes do dia 1  (semana começa domingo: offset+1)
-            offset = (primeiro_dia + 1) % 7
-            for _ in range(offset):
-                html_cal += "<td class='vazio'></td>"
-
-            dia_semana = offset
-            for dia in range(1, total_dias + 1):
-                data_dia = datetime(ano_atual, mes_atual, dia).date()
-                is_hoje  = (data_dia == hoje)
-                cls_td   = "hoje" if is_hoje else ""
-                html_cal += f"<td class='{cls_td}'>"
-                html_cal += f"<div class='dia-num {'hoje-num' if is_hoje else ''}'>{dia}</div>"
-
-                for ev in eventos_mes.get(dia, []):
-                    cor = TIPO_COR.get(str(ev.get('tipo','')), '#475569')
-                    titulo_curto = str(ev.get('titulo',''))[:18]
-                    html_cal += (f"<span class='ev-pill' style='background:{cor}' "
-                                f"title=\"{ev.get('tipo','')} — {ev.get('titulo','')}"
-                                f" | {ev.get('responsaveis','')}\">⬤ {titulo_curto}</span>")
-
-                html_cal += "</td>"
-                dia_semana += 1
-                if dia_semana % 7 == 0 and dia < total_dias:
-                    html_cal += "</tr><tr>"
-
-            # preenche final da semana
-            restante = 6 - ((dia_semana - 1) % 7)
-            if restante < 6:
-                for _ in range(restante):
+                html_cal = """
+                <style>
+                .srv-cal { width:100%; border-collapse:separate; border-spacing:3px; font-family:'Segoe UI',sans-serif; }
+                .srv-cal th { background:#1e3a5f; color:#93c5fd; font-size:.75rem; font-weight:600;
+                            letter-spacing:1px; padding:8px 4px; border-radius:4px; text-align:center; }
+                .srv-cal td { vertical-align:top; background:rgba(255,255,255,0.03);
+                            border:1px solid rgba(255,255,255,0.06); border-radius:6px;
+                            padding:4px; min-height:72px; width:14.28%; }
+                .srv-cal td.hoje { border:2px solid #3b82f6 !important; background:rgba(59,130,246,0.08); }
+                .srv-cal td.vazio { background:transparent; border:none; }
+                .dia-num { font-size:.8rem; font-weight:700; color:#94a3b8; margin-bottom:3px; }
+                .dia-num.hoje-num { color:#60a5fa; font-size:.9rem; }
+                .ev-pill { font-size:.65rem; font-weight:600; color:#fff; padding:1px 5px;
+                        border-radius:10px; margin-bottom:2px; white-space:nowrap;
+                        overflow:hidden; text-overflow:ellipsis; display:block; }
+                </style>
+                <table class="srv-cal"><thead><tr>
+                <th>DOM</th><th>SEG</th><th>TER</th><th>QUA</th><th>QUI</th><th>SEX</th><th>SÁB</th>
+                </tr></thead><tbody><tr>
+                """
+                # dias em branco antes do dia 1  (semana começa domingo: offset+1)
+                offset = (primeiro_dia + 1) % 7
+                for _ in range(offset):
                     html_cal += "<td class='vazio'></td>"
 
-            html_cal += "</tr></tbody></table>"
-            st.markdown(html_cal, unsafe_allow_html=True)
+                dia_semana = offset
+                for dia in range(1, total_dias + 1):
+                    data_dia = datetime(ano_atual, mes_atual, dia).date()
+                    is_hoje  = (data_dia == hoje)
+                    cls_td   = "hoje" if is_hoje else ""
+                    html_cal += f"<td class='{cls_td}'>"
+                    html_cal += f"<div class='dia-num {'hoje-num' if is_hoje else ''}'>{dia}</div>"
 
-            # Legenda de cores
-            st.markdown(
-                "<div style='display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:.75rem;'>" +
-                "".join([f"<span style='display:flex;align-items:center;gap:4px;'>"
-                        f"<span style='width:10px;height:10px;background:{c};border-radius:50%;display:inline-block'></span>"
-                        f"<span style='color:#94a3b8'>{t}</span></span>"
-                        for t, c in TIPO_COR.items()]) +
-                "</div>",
-                unsafe_allow_html=True,
-            )
+                    for ev in eventos_mes.get(dia, []):
+                        cor = TIPO_COR.get(str(ev.get('tipo','')), '#475569')
+                        titulo_curto = str(ev.get('titulo',''))[:18]
+                        html_cal += (f"<span class='ev-pill' style='background:{cor}' "
+                                    f"title=\"{ev.get('tipo','')} — {ev.get('titulo','')}"
+                                    f" | {ev.get('responsaveis','')}\">⬤ {titulo_curto}</span>")
+
+                    html_cal += "</td>"
+                    dia_semana += 1
+                    if dia_semana % 7 == 0 and dia < total_dias:
+                        html_cal += "</tr><tr>"
+
+                # preenche final da semana
+                restante = 6 - ((dia_semana - 1) % 7)
+                if restante < 6:
+                    for _ in range(restante):
+                        html_cal += "<td class='vazio'></td>"
+
+                html_cal += "</tr></tbody></table>"
+                st.markdown(html_cal, unsafe_allow_html=True)
+
+                # Legenda de cores
+                st.markdown(
+                    "<div style='display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:.75rem;'>" +
+                    "".join([f"<span style='display:flex;align-items:center;gap:4px;'>"
+                            f"<span style='width:10px;height:10px;background:{c};border-radius:50%;display:inline-block'></span>"
+                            f"<span style='color:#94a3b8'>{t}</span></span>"
+                            for t, c in TIPO_COR.items()]) +
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+
+            # ─────────── VISÃO SEMANAL ───────────────────────────────
+            elif visao_ag == "Semanal":
+                st.subheader("📆 Semana")
+                if 'agenda_semana_offset' not in st.session_state:
+                    st.session_state.agenda_semana_offset = 0
+
+                navs1, navs2, navs3 = st.columns([1, 2, 1])
+                if navs1.button("◀ Anterior", key="sem_prev",
+                                use_container_width=True):
+                    st.session_state.agenda_semana_offset -= 1
+                if navs3.button("Próxima ▶", key="sem_next",
+                                use_container_width=True):
+                    st.session_state.agenda_semana_offset += 1
+                if navs2.button("Hoje", key="sem_hoje",
+                                use_container_width=True):
+                    st.session_state.agenda_semana_offset = 0
+
+                _hoje_sem = datetime.now().date()
+                # semana começa no domingo (igual o calendário mensal)
+                _dia_sem_hoje = (_hoje_sem.weekday() + 1) % 7
+                _ini_sem = _hoje_sem - pd.Timedelta(days=_dia_sem_hoje) \
+                           + pd.Timedelta(weeks=st.session_state.agenda_semana_offset)
+                _fim_sem = _ini_sem + pd.Timedelta(days=6)
+
+                st.markdown(
+                    f"<div style='text-align:center;color:#94a3b8;font-size:.9rem;"
+                    f"margin:6px 0 12px;'>"
+                    f"<b>{_ini_sem.strftime('%d/%m')}</b> a "
+                    f"<b>{_fim_sem.strftime('%d/%m/%Y')}</b></div>",
+                    unsafe_allow_html=True,
+                )
+
+                # Filtra eventos da semana visíveis
+                if not _df_ag_visivel.empty:
+                    _df_sem = _df_ag_visivel[
+                        _df_ag_visivel.apply(
+                            lambda r: _toca_janela(r, _ini_sem.date()
+                                                   if hasattr(_ini_sem, 'date')
+                                                   else _ini_sem,
+                                                   _fim_sem.date()
+                                                   if hasattr(_fim_sem, 'date')
+                                                   else _fim_sem),
+                            axis=1,
+                        )
+                    ].copy()
+                else:
+                    _df_sem = pd.DataFrame()
+
+                NOMES_DIA = ["DOM","SEG","TER","QUA","QUI","SEX","SÁB"]
+                cols_sem = st.columns(7)
+                for idx, c_dia in enumerate(cols_sem):
+                    _data_dia_s = (_ini_sem + pd.Timedelta(days=idx)).date() \
+                                  if hasattr(_ini_sem, 'date') \
+                                  else _ini_sem + pd.Timedelta(days=idx)
+                    _eh_hoje_s = (_data_dia_s == _hoje_sem)
+                    _bg = "rgba(59,130,246,0.08)" if _eh_hoje_s else "rgba(255,255,255,0.03)"
+                    _border = "2px solid #3b82f6" if _eh_hoje_s \
+                              else "1px solid rgba(255,255,255,0.06)"
+                    _eventos_dia = []
+                    if not _df_sem.empty:
+                        _eventos_dia = [
+                            r for _, r in _df_sem.iterrows()
+                            if _toca_janela(r, _data_dia_s, _data_dia_s)
+                        ]
+                    with c_dia:
+                        st.markdown(
+                            f"<div style='background:{_bg};border:{_border};"
+                            f"border-radius:8px;padding:8px;min-height:160px;'>"
+                            f"<div style='font-size:.7rem;letter-spacing:1px;"
+                            f"color:#93c5fd;text-align:center;font-weight:700;'>"
+                            f"{NOMES_DIA[idx]}</div>"
+                            f"<div style='font-size:1.1rem;text-align:center;"
+                            f"color:{'#60a5fa' if _eh_hoje_s else '#e5e7eb'};"
+                            f"font-weight:700;margin-bottom:6px;'>"
+                            f"{_data_dia_s.day}</div>",
+                            unsafe_allow_html=True,
+                        )
+                        for _ev in _eventos_dia:
+                            _cor = TIPO_COR.get(str(_ev.get('tipo','')), '#475569')
+                            _ico = TIPO_ICONE.get(str(_ev.get('tipo','')), '📅')
+                            st.markdown(
+                                f"<div style='background:{_cor};color:#fff;"
+                                f"padding:3px 6px;border-radius:6px;"
+                                f"font-size:.7rem;margin-bottom:3px;"
+                                f"overflow:hidden;text-overflow:ellipsis;'>"
+                                f"{_ico} {str(_ev['titulo'])[:25]}</div>",
+                                unsafe_allow_html=True,
+                            )
+                            # Botão "🔍" curto pra caber em coluna estreita do grid 7
+                            if st.button("🔍", key=f"sem_op_{_ev['id']}_{idx}",
+                                         help="Abrir no formulário",
+                                         use_container_width=True):
+                                st.session_state['agenda_edit_id'] = int(_ev['id'])
+                                st.rerun()
+                        st.markdown("</div>", unsafe_allow_html=True)
+
+            # ─────────── VISÃO LISTA ─────────────────────────────────
+            elif visao_ag == "Lista":
+                st.subheader("📋 Lista completa")
+                st.caption(
+                    "Use os filtros e a tabela detalhada abaixo (no rodapé desta "
+                    "aba) pra navegar, editar ou excluir cada compromisso."
+                )
+                # A tabela com filtros já existe mais embaixo na aba; só
+                # damos um atalho visual aqui em cima.
+                if _df_ag_visivel.empty:
+                    st.info("Nenhum compromisso cadastrado ainda.")
+                else:
+                    _qtd_futuros = int(_df_ag_visivel.apply(
+                        lambda r: r.get('_df', r.get('_di')) >= _hoje_ag
+                        if r.get('_di') is not None else False,
+                        axis=1,
+                    ).sum())
+                    st.markdown(
+                        f"- **{len(_df_ag_visivel)}** compromissos no total "
+                        f"(filtrados pela sua visibilidade)\n"
+                        f"- **{_qtd_futuros}** ainda futuros ou em andamento\n"
+                        f"- **{len(_df_ag_visivel) - _qtd_futuros}** já passaram"
+                    )
+
+            # ─────────── VISÃO RESUMO (dashboard) ────────────────────
+            else:  # Resumo
+                st.subheader("📊 Resumo executivo")
+                # Próximos 5 eventos do usuário (inclui em-curso, exclui passados)
+                st.markdown(
+                    "**📌 Próximos compromissos "
+                    + ("(equipe)" if perfil_atual == "Gestor" else "(seus)") + "**"
+                )
+                if _df_ag_visivel.empty:
+                    st.info("Sem compromissos.")
+                else:
+                    _df_prox = _df_ag_visivel[
+                        _df_ag_visivel.apply(
+                            lambda r: (r.get('_df') or r.get('_di')) >= _hoje_ag,
+                            axis=1,
+                        )
+                    ].sort_values('_di').head(5)
+                    if _df_prox.empty:
+                        st.info("Sem compromissos futuros.")
+                    else:
+                        for _, _ev in _df_prox.iterrows():
+                            _di = _ev['_di']
+                            _df_ = _ev['_df'] or _di
+                            _dias_ate = (_di - _hoje_ag).days
+                            # Status temporal contextual (sem "em -N dias" estranho)
+                            if _dias_ate < 0 and _df_ >= _hoje_ag:
+                                _quando = f"<span style='color:#16a34a;font-weight:600;'>" \
+                                          f"Em curso até {_df_.strftime('%d/%m')}</span>"
+                            elif _dias_ate == 0:
+                                _quando = "<span style='color:#3b82f6;font-weight:600;'>Hoje</span>"
+                            elif _dias_ate == 1:
+                                _quando = "<span style='color:#0891b2;'>Amanhã</span>"
+                            else:
+                                _quando = f"em {_dias_ate} dias"
+
+                            _cor = TIPO_COR.get(str(_ev.get('tipo','')), '#475569')
+                            _ico = TIPO_ICONE.get(str(_ev.get('tipo','')), '📅')
+                            _periodo = (
+                                _di.strftime('%d/%m')
+                                if _di == _df_
+                                else f"{_di.strftime('%d/%m')}–{_df_.strftime('%d/%m')}"
+                            )
+                            # Layout compacto: largura maior pro botão (~25%)
+                            # pra "Abrir" não quebrar em coluna estreita.
+                            c_ev1, c_ev2 = st.columns([5, 1], gap="small")
+                            c_ev1.markdown(
+                                f"<div style='border-left:3px solid {_cor};"
+                                f"padding:2px 0 2px 8px;margin:0;line-height:1.35;'>"
+                                f"<b>{_ico} {_ev['titulo']}</b> "
+                                f"<span style='color:#94a3b8;font-size:.78rem;'>"
+                                f"· {_quando} <span style='opacity:.7;'>({_periodo})</span>"
+                                f"</span></div>",
+                                unsafe_allow_html=True,
+                            )
+                            if c_ev2.button("🔍", key=f"res_ab_{_ev['id']}",
+                                            help="Abrir no formulário",
+                                            use_container_width=True):
+                                st.session_state['agenda_edit_id'] = int(_ev['id'])
+                                st.rerun()
+
+                st.divider()
+
+                # Distribuição por tipo no mês atual
+                st.markdown("**📊 Compromissos por tipo (este mês)**")
+                if not _df_ag_visivel.empty:
+                    _df_mes_r = _df_ag_visivel[
+                        _df_ag_visivel.apply(
+                            lambda r: _toca_janela(r, _ini_mes_ag, _fim_mes_ag),
+                            axis=1,
+                        )
+                    ]
+                    _por_tipo = _df_mes_r.groupby('tipo').size() \
+                                .sort_values(ascending=False)
+                    if _por_tipo.empty:
+                        st.caption("Sem dados no mês atual.")
+                    else:
+                        for _t, _q in _por_tipo.items():
+                            _cor = TIPO_COR.get(str(_t), '#475569')
+                            _ico = TIPO_ICONE.get(str(_t), '📅')
+                            st.markdown(
+                                f"- <span style='background:{_cor};color:#fff;"
+                                f"padding:1px 8px;border-radius:8px;font-size:.78rem;'>"
+                                f"{_ico} {_t}</span> &nbsp; **{_q}**",
+                                unsafe_allow_html=True,
+                            )
+
+                st.divider()
+
+                # Top membros mais ocupados (mês)
+                if perfil_atual == "Gestor" and not _df_ag_visivel.empty:
+                    st.markdown("**👥 Membros mais ocupados (mês)**")
+                    _df_mes_r2 = _df_ag_visivel[
+                        _df_ag_visivel.apply(
+                            lambda r: _toca_janela(r, _ini_mes_ag, _fim_mes_ag),
+                            axis=1,
+                        )
+                    ]
+                    _contagem = {}
+                    for _, _r in _df_mes_r2.iterrows():
+                        for _nome in str(_r.get('responsaveis','')).split(','):
+                            _n = _nome.strip()
+                            if _n:
+                                _contagem[_n] = _contagem.get(_n, 0) + 1
+                    _top = sorted(_contagem.items(), key=lambda x: -x[1])[:5]
+                    if _top:
+                        for _n, _q in _top:
+                            st.markdown(f"- **{_n}** — {_q} compromisso(s)")
+                    else:
+                        st.caption("Sem dados.")
 
         # ── FORMULÁRIO DE CADASTRO / EDIÇÃO ───────────────────────────
         with col_form:
