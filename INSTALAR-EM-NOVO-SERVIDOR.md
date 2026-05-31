@@ -43,6 +43,10 @@ de referência: o app rodando em `http://<IP-DO-SERVIDOR>/gestao-de-projetos/`.
 > - O `migrar-sqlite-para-postgres.py` usa `INSERT ... OVERRIDING SYSTEM VALUE`
 >   nos `id`s — porque o schema usa `BIGINT GENERATED ALWAYS AS IDENTITY`,
 >   que sem isso rejeita inserts com id explícito.
+> - **bcrypt** substituiu SHA-256 puro (`passlib[bcrypt]`). Hashes legados
+>   continuam aceitos no login e são re-gravados como bcrypt no primeiro
+>   login bem-sucedido (rehash transparente). Nenhum usuário precisa
+>   trocar a senha após a migração.
 
 ---
 

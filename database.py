@@ -18,6 +18,8 @@ import secrets
 import time
 import os
 
+from passlib.hash import bcrypt as _bcrypt
+
 
 # ─── CONEXÃO ──────────────────────────────────────────────
 def conectar():
@@ -33,8 +35,74 @@ def conectar():
         password=os.environ.get('DB_PASSWORD', ''),
     )
 
+
+# ─── HASH DE SENHA ────────────────────────────────────────
+# Maio/2026: troca de SHA-256 puro pra bcrypt.
+#
+# `gerar_hash()` agora gera bcrypt (com salt aleatório). Hashes antigos
+# SHA-256 (64 chars hex) continuam aceitos via `verificar_hash()` — quando
+# um usuário com hash legado faz login com sucesso, o hash é **re-gravado
+# como bcrypt** automaticamente (rehash transparente). Após todos os
+# usuários ativos logarem ao menos uma vez, todos os hashes terão migrado.
+#
+# Para forçar migração sem esperar login: o admin troca a senha pelo
+# painel "Membros" — o INSERT/UPDATE já vai com bcrypt.
+
+def _eh_sha256_hex(s):
+    """True se s parece ser SHA-256 puro: 64 chars hexadecimais."""
+    if not isinstance(s, str) or len(s) != 64:
+        return False
+    try:
+        int(s, 16)
+        return True
+    except ValueError:
+        return False
+
+
 def gerar_hash(senha):
-    return hashlib.sha256(str.encode(senha)).hexdigest()
+    """Gera hash bcrypt da senha (salt aleatório, custo default ~12).
+
+    Substituiu SHA-256 puro em maio/2026 — hashes antigos continuam
+    aceitos no login via `verificar_hash` + rehash transparente.
+    """
+    return _bcrypt.hash(str(senha))
+
+
+def verificar_hash(senha_plain, hash_armazenado):
+    """Verifica `senha_plain` contra `hash_armazenado`.
+
+    Retorna `(valido, precisa_rehash)`:
+      - `valido=True` se a senha bate (via bcrypt OU SHA-256 legado).
+      - `precisa_rehash=True` quando o hash armazenado é SHA-256 legado
+        e o caller deve re-gravar via `gerar_hash(senha_plain)` pra migrar.
+    """
+    if not hash_armazenado or senha_plain is None:
+        return False, False
+    if _eh_sha256_hex(hash_armazenado):
+        # Hash legado SHA-256 puro
+        atual = hashlib.sha256(str(senha_plain).encode()).hexdigest()
+        return (atual == hash_armazenado, True) if atual == hash_armazenado \
+               else (False, False)
+    # Tenta bcrypt
+    try:
+        return (_bcrypt.verify(str(senha_plain), hash_armazenado), False)
+    except (ValueError, TypeError):
+        # Hash em formato desconhecido — trata como inválido em vez de explodir.
+        return (False, False)
+
+
+def atualizar_hash_senha(usuario, nova_senha_plain):
+    """Re-grava o hash da senha (gera bcrypt fresco). Usado tanto pra trocar
+    senha como pra migrar SHA-256 → bcrypt transparente no login."""
+    conn = conectar(); c = conn.cursor()
+    try:
+        c.execute(
+            "UPDATE usuarios SET senha = %s WHERE nome = %s",
+            (gerar_hash(nova_senha_plain), usuario),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # ─── RECUPERAÇÃO DE SENHA (pergunta secreta) ──────────────
@@ -64,14 +132,32 @@ def obter_pergunta_secreta(usuario):
         conn.close()
 
 def validar_resposta_secreta(usuario, resposta):
-    """True se a resposta (normalizada) bate com o hash guardado."""
+    """True se a resposta (normalizada) bate com o hash guardado.
+
+    Aceita hashes SHA-256 legados e bcrypt. Se for legado e bater, re-grava
+    como bcrypt (mesma estratégia de rehash transparente das senhas).
+    """
+    if not resposta:
+        return False
+    resp_norm = str(resposta).strip().lower()
     conn = conectar(); c = conn.cursor()
     try:
         c.execute("SELECT resposta_secreta FROM usuarios WHERE nome = %s", (usuario,))
         row = c.fetchone()
         if not row or not row[0]:
             return False
-        return row[0] == gerar_hash(str(resposta).strip().lower())
+        hash_guardado = row[0]
+        valido, precisa_rehash = verificar_hash(resp_norm, hash_guardado)
+        if valido and precisa_rehash:
+            try:
+                c.execute(
+                    "UPDATE usuarios SET resposta_secreta = %s WHERE nome = %s",
+                    (gerar_hash(resp_norm), usuario),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()  # rehash falhou — não bloqueia o login
+        return valido
     finally:
         conn.close()
 
@@ -129,13 +215,31 @@ def atualizar_perfil(nome, cargo=None, email=None, avatar_path=None):
         conn.close()
 
 def verificar_senha(usuario, senha):
-    """True se a senha (texto puro) bate com o hash guardado. Usado pra confirmar
-    a senha atual antes de trocar."""
+    """True se a senha (texto puro) bate com o hash guardado.
+
+    Usado pra confirmar a senha atual antes de trocar (painel "Meu Perfil").
+    Aceita hashes SHA-256 legados e bcrypt. Re-grava como bcrypt se o hash
+    armazenado for legado (rehash transparente).
+    """
+    if senha is None:
+        return False
     conn = conectar(); c = conn.cursor()
     try:
         c.execute("SELECT senha FROM usuarios WHERE nome = %s", (usuario,))
         row = c.fetchone()
-        return bool(row and row[0] == gerar_hash(senha))
+        if not row or not row[0]:
+            return False
+        valido, precisa_rehash = verificar_hash(senha, row[0])
+        if valido and precisa_rehash:
+            try:
+                c.execute(
+                    "UPDATE usuarios SET senha = %s WHERE nome = %s",
+                    (gerar_hash(senha), usuario),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()  # rehash falhou — não bloqueia a verificação
+        return valido
     finally:
         conn.close()
 

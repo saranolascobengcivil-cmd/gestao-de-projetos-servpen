@@ -49,7 +49,7 @@ maduro (psycopg3), defaults sensatos.
 | 1 | **Git + GitHub privado** | Single point of failure absoluto — sumiu o `app.py` = perdeu o sistema. Já vimos isso acontecer | ✅ **Feito** (repo `diogosvicente/gestao-de-projetos-servpen`) |
 | 2 | **Backup automático diário do Postgres** | Hoje só faz backup quando o `install.sh` roda. Se algo corromper hoje, último backup foi quando? | ✅ **Feito** (timer systemd `backup-gestao-de-projetos.timer`, retenção 30 dias) |
 | 3 | **HTTPS** com Let's Encrypt + certbot | Token de sessão vai em texto puro pela rede. Qualquer sniff captura e rouba sessão | Pendente |
-| 4 | **bcrypt** no lugar de SHA-256 puro | Vulnerável a rainbow tables se o `.db` vazar. Migrar hashes existentes incluído no esforço | Pendente |
+| 4 | **bcrypt** no lugar de SHA-256 puro | Vulnerável a rainbow tables se o `.db` vazar. Migrar hashes existentes incluído no esforço | ✅ **Feito** (`passlib[bcrypt]`, rehash transparente no login — usuários antigos migram sem precisar trocar senha) |
 | 5 | **Trocar o servidor** (qualquer CPU dos últimos ~8 anos com AVX2) | Sozinho resolve mais que qualquer mudança de software | Pendente |
 
 ---
@@ -58,7 +58,7 @@ maduro (psycopg3), defaults sensatos.
 
 | # | Item | Risco atual | Solução | Esforço |
 |---|---|---|---|---|
-| 🔴 | **Senhas em SHA-256 sem salt** | Vulnerável a rainbow tables. SHA-256 é pra hash de conteúdo, não senha | `bcrypt` ou `argon2` (lib `passlib`); migrar hashes existentes | Médio |
+| ✅ | ~~**Senhas em SHA-256 sem salt**~~ Migrado pra **bcrypt** (maio/2026) | — | `passlib[bcrypt]`. Rehash transparente no login — hashes legados migram conforme cada usuário loga. | ✅ Feito |
 | 🔴 | **HTTP sem TLS** | Token de sessão em texto puro em URL e cookies. Sniff trivial | Let's Encrypt + certbot no Apache | Baixo |
 | 🔴 | **Sem rate limiting no login** | Brute-force livre. Bot pode fazer milhares de tentativas/s | Bloqueio temporário após N falhas (tabela `login_falhas`) | Baixo |
 | 🟠 | **Token de sessão no querystring** (`?t=...`) | Aparece em logs do Apache, no histórico do browser, em headers Referer | Migrar pra cookie HttpOnly; precisa sessão server-side real | Médio |
