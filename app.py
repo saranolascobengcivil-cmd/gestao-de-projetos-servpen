@@ -4186,9 +4186,13 @@ else:
             _hoje_chat = datetime.now().date()
             _ultimo_dia = None
 
-            for _, m in df_m.iterrows():
+            # `enumerate` pra ter um índice único como salvaguarda nos keys
+            # (defensivo: se algum dia df_m tiver linha duplicada por bug
+            # de query/migração, keys colidem; índice torna unique).
+            for _idx_m, (_, m) in enumerate(df_m.iterrows()):
                 sou_eu = m['remetente'] == usuario
                 _msg_id = int(m['id'])
+                _kfx = f"{_msg_id}_{_idx_m}"   # sufixo de key
 
                 # Separador de dia
                 try:
@@ -4231,17 +4235,17 @@ else:
                 )
 
                 if sou_eu:
-                    # Layout: bolha (90%) + popover ⋯ (10%) alinhados à direita
+                    # Layout: bolha (92%) + popover ⋯ (8%) alinhados à direita
                     cm_main, cm_act = st.columns([0.92, 0.08])
                     cm_main.markdown(_bolha_html, unsafe_allow_html=True)
                     with cm_act:
                         with st.popover("⋯", use_container_width=True,
                                         help="Ações da mensagem"):
-                            if st.button("✏️ Editar", key=f"ed_{_msg_id}",
+                            if st.button("✏️ Editar", key=f"ed_{_kfx}",
                                          use_container_width=True):
                                 st.session_state[f"edit_mode_{_msg_id}"] = True
                                 st.rerun(scope="fragment")
-                            if st.button("🗑️ Apagar", key=f"del_{_msg_id}",
+                            if st.button("🗑️ Apagar", key=f"del_{_kfx}",
                                          use_container_width=True):
                                 db.excluir_mensagem_chat(_msg_id)
                                 st.rerun(scope="fragment")
@@ -4254,16 +4258,16 @@ else:
                         _novo_txt = st.text_input(
                             "Corrigir mensagem",
                             value=str(m['mensagem']),
-                            key=f"inp_{_msg_id}",
+                            key=f"inp_{_kfx}",
                             label_visibility="collapsed",
                         )
                         ec1, ec2 = st.columns(2)
-                        if ec1.button("✅ Salvar", key=f"sv_{_msg_id}",
+                        if ec1.button("✅ Salvar", key=f"sv_{_kfx}",
                                       use_container_width=True):
                             db.editar_mensagem_chat(_msg_id, _novo_txt)
                             st.session_state[f"edit_mode_{_msg_id}"] = False
                             st.rerun(scope="fragment")
-                        if ec2.button("✖ Cancelar", key=f"cn_{_msg_id}",
+                        if ec2.button("✖ Cancelar", key=f"cn_{_kfx}",
                                       use_container_width=True):
                             st.session_state[f"edit_mode_{_msg_id}"] = False
                             st.rerun(scope="fragment")
