@@ -1047,6 +1047,21 @@ def _estiliza_plotly(fig):
 db.criar_tabela_sessoes()
 db.limpar_sessoes_expiradas()
 
+# Toast custom "📨 Ver mensagem" navega via `?_goto_chat=NOME`. Lemos aqui
+# (depois do parse natural de query params do Streamlit), setamos o contato
+# pra pré-selecionar no selectbox da aba Chat e limpamos o param da URL pra
+# não persistir entre reruns.
+_goto_chat = st.query_params.get('_goto_chat')
+if _goto_chat:
+    st.session_state['_chat_proximo_contato'] = _goto_chat
+    # Mostra feedback visual depois — o toast fechou, então user precisa
+    # saber que foi direcionado.
+    st.session_state['_chat_aviso_redirect'] = _goto_chat
+    try:
+        del st.query_params['_goto_chat']
+    except KeyError:
+        pass
+
 if not st.session_state.get('autenticado', False):
     _tok = st.query_params.get('t')
     _sess = db.validar_sessao(_tok)
@@ -1907,6 +1922,39 @@ else:
         t_bi, t_kanban, t_novo, t_diario, t_arquivos, t_equipe, t_chat, t_agenda = tabs
         t_auditoria = None
         t_acessos = None
+
+    # Se o usuário clicou "📨 Ver mensagem" no toast, fomos redirecionados
+    # via query param `?_goto_chat=NOME`. A seleção do contato já foi
+    # tratada no boot. Aqui, ALÉM disso, simulamos um clique na aba "Chat"
+    # pra ele cair direto lá em vez de continuar na aba antiga.
+    # (Streamlit não tem API pra trocar tab programaticamente.)
+    if st.session_state.get('_chat_aviso_redirect'):
+        import streamlit.components.v1 as _components
+        _components.html(
+            """
+            <script>
+            (function () {
+                try {
+                    // Espera um tick pra garantir que tabs renderizaram
+                    setTimeout(function () {
+                        var doc = window.parent.document;
+                        var tabs = doc.querySelectorAll('button[role="tab"]');
+                        for (var i = 0; i < tabs.length; i++) {
+                            var txt = tabs[i].textContent || '';
+                            if (txt.indexOf('Chat') !== -1) {
+                                tabs[i].click();
+                                break;
+                            }
+                        }
+                    }, 150);
+                } catch (e) { console.warn('goto-chat:', e); }
+            })();
+            </script>
+            """,
+            height=0,
+        )
+        # Limpa pra não disparar de novo em reruns
+        del st.session_state['_chat_aviso_redirect']
 
     # --- ABA 1: DASHBOARD BI (COMPLETA E CORRIGIDA) ---
     with t_bi:
@@ -4369,6 +4417,132 @@ else:
     # Re-roda a cada 10s em QUALQUER aba. (Foi 30s; trazendo de volta pra 10s
     # pra toast de nova mensagem aparecer rápido conforme pedido do usuário,
     # mantendo carga modesta — 1 SELECT a cada 10s/usuario online.)
+    # Toast custom (HTML/JS): persistente por 30s, com botões "✖ Fechar"
+    # e "📨 Ver". O st.toast nativo dura ~4s e não aceita botões. Aqui
+    # injetamos um div fixo no DOM pai (fora do iframe do components.html)
+    # via window.parent, simulando um toast estilo WhatsApp/Telegram.
+    def _chat_toast_html(remetente: str, qtd: int):
+        import json as _json
+        import streamlit.components.v1 as _components
+        # JSON-encode garante escape correto pro JS
+        _rem_js = _json.dumps(str(remetente))
+        _qtd_js = int(qtd)
+        _components.html(
+            f"""
+            <script>
+            (function () {{
+                try {{
+                    var doc = window.parent.document;
+                    var REM = {_rem_js};
+                    var QTD = {_qtd_js};
+
+                    // CSS injetado uma vez só
+                    if (!doc.getElementById('wa-toast-styles')) {{
+                        var styleTag = doc.createElement('style');
+                        styleTag.id = 'wa-toast-styles';
+                        styleTag.textContent = [
+                            '#wa-toast-stack {{ position:fixed; right:16px; bottom:16px;',
+                            '  display:flex; flex-direction:column; gap:8px;',
+                            '  z-index:99999; max-width:360px; }}',
+                            '.wa-toast {{ background:#1e3a5f; border:1px solid #3b82f6;',
+                            '  border-radius:10px; padding:10px 14px; color:#e9edef;',
+                            '  font-family:"Source Sans Pro",sans-serif; font-size:13.5px;',
+                            '  box-shadow:0 4px 14px rgba(0,0,0,0.4);',
+                            '  animation:wa-slide-in .25s ease-out; }}',
+                            '.wa-toast-head {{ font-weight:600; margin-bottom:6px;',
+                            '  display:flex; justify-content:space-between;',
+                            '  align-items:center; gap:8px; }}',
+                            '.wa-toast-actions {{ display:flex; gap:6px; margin-top:6px; }}',
+                            '.wa-toast-actions button {{ flex:1; padding:5px 10px;',
+                            '  border-radius:6px; border:1px solid rgba(255,255,255,.15);',
+                            '  background:rgba(255,255,255,.07); color:#e9edef;',
+                            '  font-size:12px; font-weight:500; cursor:pointer;',
+                            '  transition:background .15s; }}',
+                            '.wa-toast-actions button:hover {{ background:rgba(255,255,255,.15); }}',
+                            '.wa-toast-actions button.primary {{ background:#3b82f6;',
+                            '  border-color:#3b82f6; }}',
+                            '.wa-toast-actions button.primary:hover {{ background:#2563eb; }}',
+                            '.wa-toast-close {{ background:transparent; border:0;',
+                            '  color:#94a3b8; cursor:pointer; font-size:14px; padding:0 4px; }}',
+                            '@keyframes wa-slide-in {{',
+                            '  from {{ transform:translateX(110%); opacity:0; }}',
+                            '  to   {{ transform:translateX(0); opacity:1; }} }}',
+                            '.wa-toast.closing {{ animation:wa-slide-out .2s ease-in forwards; }}',
+                            '@keyframes wa-slide-out {{',
+                            '  from {{ transform:translateX(0); opacity:1; }}',
+                            '  to   {{ transform:translateX(110%); opacity:0; }} }}',
+                        ].join('\\n');
+                        doc.head.appendChild(styleTag);
+                    }}
+
+                    // Stack container (1 só, persistente)
+                    var stack = doc.getElementById('wa-toast-stack');
+                    if (!stack) {{
+                        stack = doc.createElement('div');
+                        stack.id = 'wa-toast-stack';
+                        doc.body.appendChild(stack);
+                    }}
+
+                    // Função pra fechar (animação + remoção)
+                    function closeToast(toast) {{
+                        if (!toast || !toast.parentElement) return;
+                        toast.classList.add('closing');
+                        setTimeout(function () {{ toast.remove(); }}, 200);
+                    }}
+
+                    // Se já tem toast desse remetente, atualiza qtd e renova timer
+                    var existing = stack.querySelector(
+                        '[data-rem="' + REM.replace(/"/g, '&quot;') + '"]'
+                    );
+                    var toast = existing || doc.createElement('div');
+                    if (!existing) {{
+                        toast.className = 'wa-toast';
+                        toast.setAttribute('data-rem', REM);
+                    }}
+                    toast.innerHTML = ''
+                        + '<div class="wa-toast-head">'
+                        + '<span>🔔 💬 Nova(s) de <b></b> (<span class="qtd"></span>)</span>'
+                        + '<button class="wa-toast-close" title="Fechar">✖</button>'
+                        + '</div>'
+                        + '<div class="wa-toast-actions">'
+                        + '<button class="wa-btn-close">Fechar</button>'
+                        + '<button class="primary wa-btn-go">📨 Ver mensagem</button>'
+                        + '</div>';
+                    // Preenche o nome com textContent pra evitar XSS
+                    toast.querySelector('.wa-toast-head b').textContent = REM;
+                    toast.querySelector('.qtd').textContent = QTD;
+
+                    // Wiring dos botões (usa addEventListener em vez de onclick inline)
+                    toast.querySelector('.wa-toast-close')
+                         .addEventListener('click', function () {{ closeToast(toast); }});
+                    toast.querySelector('.wa-btn-close')
+                         .addEventListener('click', function () {{ closeToast(toast); }});
+                    toast.querySelector('.wa-btn-go')
+                         .addEventListener('click', function () {{
+                             // Preserva token de sessão (?t=...) na URL e
+                             // adiciona _goto_chat=NOME pra Python pegar no rerun.
+                             var url = new URL(window.parent.location.href);
+                             url.searchParams.set('_goto_chat', REM);
+                             window.parent.location.href = url.toString();
+                         }});
+
+                    if (!existing) {{
+                        stack.appendChild(toast);
+                    }} else if (toast.__timer) {{
+                        clearTimeout(toast.__timer);
+                    }}
+
+                    // Auto-fecha em 30s
+                    toast.__timer = setTimeout(function () {{
+                        closeToast(toast);
+                    }}, 30000);
+                }} catch (e) {{ console.warn('wa-toast:', e); }}
+            }})();
+            </script>
+            """,
+            height=0,
+        )
+
     @st.fragment(run_every="10s")
     def _global_notif(usuario):
         # 1) Chat
@@ -4379,14 +4553,9 @@ else:
             anterior = ultimas_chat.get(rem, 0)
             if qtd > anterior:
                 novas = qtd - anterior
-                # Toast com instrução pra ir à aba Chat (st.toast não é
-                # clicável nativamente — quando o usuário FINALMENTE entrar
-                # na aba Chat, o selectbox abre direto no `rem` graças ao
-                # `_chat_proximo_contato` setado abaixo).
-                st.toast(
-                    f"💬 **{novas} nova(s) de {rem}** — abra a aba 💬 Chat",
-                    icon="🔔",
-                )
+                # Toast custom 30s com botões "Fechar" e "Ver mensagem"
+                # (st.toast nativo dura só ~4s e não aceita ações).
+                _chat_toast_html(rem, novas)
                 _ultimo_remetente_novo = rem
         st.session_state['_chat_ultimas_contagens'] = atuais_chat
         # Memoriza o último remetente com msg nova → o selectbox da aba Chat
