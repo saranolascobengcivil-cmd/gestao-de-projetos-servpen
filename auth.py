@@ -8,7 +8,7 @@ def validar_login(usuario, senha):
     # Converte a senha digitada para Hash para bater com o banco
     senha_hash = db.gerar_hash(senha)
     
-    c.execute("SELECT nome, perfil FROM usuarios WHERE nome = ? AND senha = ?", (usuario, senha_hash))
+    c.execute("SELECT nome, perfil FROM usuarios WHERE nome = %s AND senha = %s", (usuario, senha_hash))
     user = c.fetchone()
     conn.close()
 
