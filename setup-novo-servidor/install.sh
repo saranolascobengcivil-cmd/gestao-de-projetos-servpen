@@ -160,8 +160,28 @@ echo "==>  6/13 Instalando libs Python via pip"
     'SQLAlchemy>=2.0,<3'
 
 # --- 7/13 — Apaga wheels do PyPI que dão SIGILL em CPUs sem AVX2 ------------
-# Mantido por defesa — em CPUs modernas é no-op. numpy/pandas/scipy/reportlab/pil
-# vêm do apt (baseline x86-64-v1). pyarrow continua AUSENTE.
+#
+# CRÍTICO em CPUs antigas (Athlon II X2 do 228.20, Core 2 Duo, etc.):
+#   numpy/pandas/pyarrow/scipy modernos do PyPI são compilados com
+#   instruções AVX/AVX2. Quando importados em CPU sem essas instruções,
+#   o processo morre com `Illegal instruction (SIGILL)`. Sintomas
+#   visíveis: serviço em restart loop infinito + Apache responde 503 +
+#   `journalctl -u gestao-de-projetos` mostra
+#   `Main process exited, code=dumped, status=4/ILL`.
+#
+# Solução: apagar os wheels do venv pra forçar o Python a usar as
+# versões do apt (numpy 1.26 etc. compilados x86-64-v1, funcionam em
+# qualquer CPU desde 2003). Mantido também o cleanup do ~/.local (HOME
+# = APP_DIR neste setup; pip --user salva aqui e vence o venv).
+#
+# Em CPUs modernas (Xeon Gold 5220 do 238.40, qualquer Sandy Bridge+
+# de 2011+ com AVX2) este passo é NO-OP inofensivo — os globs não
+# casam nada. Pode manter sem prejuízo.
+#
+# IMPORTANTE: após qualquer `pip install/upgrade/--force-reinstall`
+# manual neste hardware, RE-EXECUTE o for-loop abaixo (ou rode o
+# install.sh inteiro). Senão, pip puxa numpy/pandas modernos como
+# deps de outras libs e o app volta a crashar.
 echo "==>  7/13 Removendo wheels PyPI conflitantes (caso pip tenha puxado)"
 for mod in numpy pandas pyarrow scipy bottleneck numexpr; do
     rm -rf "${APP_DIR}/venv/lib/python3."*/site-packages/${mod}* 2>/dev/null || true

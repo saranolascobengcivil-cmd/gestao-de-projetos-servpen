@@ -76,11 +76,12 @@ de referência: o app rodando em `http://<IP-DO-SERVIDOR>/gestao-de-projetos/`.
 
 ### 1.1 Checklist de upgrade após migrar pro 238.40 (Xeon Gold 5220)
 
-O 238.40 tem `AVX`, `AVX2` e `AVX-512` — pyarrow e wheels modernos do
-PyPI rodam sem SIGILL. Aproveite pra remover gambiarras do 228.20:
+O 238.40 tem `AVX`, `AVX2` e `AVX-512` — wheels modernos do PyPI
+(numpy, pandas, pyarrow, scipy) rodam sem SIGILL. **Toda a precaução
+que existia no 228.20 vira desnecessária aqui.**
 
 ```bash
-# 1. Sobe Streamlit pra versão recente (puxa pyarrow junto, já roda OK no Xeon)
+# 1. Sobe Streamlit pra versão recente (puxa pyarrow junto, OK no Xeon)
 sudo /var/www/html/gestao_de_projetos/venv/bin/pip install --upgrade \
     'streamlit>=1.40,<1.50'
 
@@ -90,22 +91,36 @@ sudo /var/www/html/gestao_de_projetos/venv/bin/pip install --upgrade \
 # 3. NÃO precisa editar app.py:
 #    O helper `_pill_select` em app.py escolhe automaticamente o melhor
 #    widget — st.segmented_control quando disponível (≥1.40), senão
-#    st.radio horizontal. Subir a versão do Streamlit já troca a UI.
+#    st.radio horizontal. Subir a versão do Streamlit já troca a UI
+#    automaticamente.
 
-# 4. O passo 7/13 do install.sh (remove pyarrow do venv) vira no-op
-#    inofensivo no Xeon — pode deixar. Ou limpar dele o rm -rf
-#    pyarrow* pra deixar o script mais elegante.
+# 4. O passo 7/13 do install.sh (remove numpy/pandas/pyarrow do venv)
+#    vira no-op inofensivo no Xeon — os globs não casam nada porque
+#    o pip puxa esses módulos de novo. Pode deixar o passo lá; não
+#    quebra. Ou limpe o for-loop pra deixar o script mais elegante.
 
 # 5. Restart e validação
 sudo systemctl restart gestao-de-projetos
 curl -sI http://127.0.0.1:8501/gestao-de-projetos/_stcore/health
-# Deve dar HTTP 200 e o Kanban mostra "segmented control" no lugar do radio.
+# Esperado: HTTP 200 e o Kanban mostra "segmented control" no lugar do radio.
 ```
 
-Recomendação: **NÃO** atualize Streamlit antes de testar tudo no
-hardware novo — primeiro migra o sistema com `streamlit==1.39.0` (que
-funciona), valida no navegador, **depois** sobe pra 1.40+. Risco
-isolado.
+### Diferenças operacionais 228.20 → 238.40
+
+| Aspecto | 228.20 (Athlon II, atual) | 238.40 (Xeon Gold, futuro) |
+|---|---|---|
+| `streamlit` versão | `==1.39.0` (último sem pyarrow obrigatório) | `>=1.40,<1.50` |
+| Widget Kanban Visão/Densidade | `st.radio(horizontal=True)` (auto via helper) | `st.segmented_control` (auto via helper) |
+| numpy/pandas | do `apt` (1.26 + 2.1.4) — wheels do PyPI **proibidos** | wheels modernos do PyPI OK |
+| pyarrow | **AUSENTE** do venv | Pode instalar, `st.dataframe` volta a funcionar |
+| `st.dataframe` / `st.table` | Não usar (depende de pyarrow) — HTML manual | Usar à vontade |
+| Após `pip install` qualquer coisa | **OBRIGATÓRIO** rodar passo 7/13 de novo | Nada especial |
+| Boot do app | ~3-5 s | ~1-2 s |
+
+Recomendação ao migrar: **NÃO** atualize Streamlit antes de validar
+o sistema funcionando no Xeon com `streamlit==1.39.0`. Risco
+isolado — primeiro confirma que o stack todo (Postgres, Apache, etc.)
+está OK, depois faz o upgrade do Streamlit como mudança única.
 
 ---
 
@@ -430,11 +445,114 @@ e `create mask = 0775`. Veja o `smb.conf` do servidor antigo como referência.
 
 ---
 
+## 8.5 ⚠️ AVX2 e wheels do PyPI — leia ANTES de qualquer `pip install`
+
+**Esta é a fonte número 1 de problemas no 228.20.** Wheels modernos do
+PyPI (`numpy`, `pandas`, `pyarrow`, `scipy`, etc.) são compilados com
+instruções **AVX/AVX2** que **não existem** na CPU do 228.20 (Athlon II
+X2 250, lançada 2009). Importar uma versão moderna desses módulos
+dispara `Illegal instruction (SIGILL)` e o processo morre.
+
+### Hardware vs comportamento esperado
+
+| Servidor | CPU | AVX2 | numpy/pandas/pyarrow do PyPI | O que fazer |
+|---|---|---|---|---|
+| **228.20** (atual) | Athlon II X2 250 (2009) | ❌ Não | **Crasha SIGILL** | Usar versões do `apt`. NUNCA deixar wheel do PyPI desses módulos no venv. |
+| **238.40** (futuro) | Xeon Gold 5220 (2019) | ✅ AVX-512 | Funciona perfeitamente | Pode usar wheels modernos sem restrição. |
+
+### Sinais que você está com esse problema (no 228.20)
+
+- Status do systemd vira **restart loop**: `restart counter is at N`
+  (N crescendo rápido)
+- `journalctl -u gestao-de-projetos` mostra:
+  ```
+  Main process exited, code=dumped, status=4/ILL
+  Failed with result 'core-dump'
+  ```
+- Streamlit imprime `You can now view your Streamlit app` no log e
+  logo em seguida some sem stack trace Python
+- Apache responde **HTTP 503 Service Unavailable** (porque o backend
+  fica caindo)
+- Rodando manualmente em foreground: termina com a string literal
+  `Illegal instruction` no terminal e prompt volta
+
+### Resolução no 228.20 (sequência exata que funciona)
+
+```bash
+# 1. Para o restart loop
+sudo systemctl stop gestao-de-projetos
+sudo systemctl reset-failed gestao-de-projetos
+
+# 2. Remove wheels modernos do venv (mesmo que o passo 7/13 do install.sh)
+for mod in numpy pandas pyarrow scipy bottleneck numexpr; do
+    sudo rm -rf /var/www/html/gestao_de_projetos/venv/lib/python3.*/site-packages/${mod}*
+done
+
+# Limpa também ~/.local (HOME do app == APP_DIR, pip --user salva aqui)
+sudo rm -rf /var/www/html/gestao_de_projetos/.local/lib/python3.*/site-packages/{numpy,pandas,pyarrow,scipy,bottleneck,numexpr}* 2>/dev/null || true
+
+# 3. Confirma que sumiu
+ls /var/www/html/gestao_de_projetos/venv/lib/python3.12/site-packages/ \
+    | grep -iE 'numpy|pandas|pyarrow|scipy' \
+    || echo "OK venv limpo"
+
+# 4. Confirma que numpy/pandas do apt funcionam pro Python do venv
+/var/www/html/gestao_de_projetos/venv/bin/python -c "
+import numpy, pandas
+print('numpy ', numpy.__version__,  'em', numpy.__file__)
+print('pandas', pandas.__version__, 'em', pandas.__file__)
+"
+# Esperado: caminho /usr/lib/python3/dist-packages/  (versões do apt)
+# Se mostrar /var/www/.../venv/...  ainda tem wheel sobrando — repete passo 2.
+
+# 5. Sobe o serviço
+sudo systemctl restart gestao-de-projetos
+sleep 5
+curl -sI http://152.92.228.20/gestao-de-projetos/  # esperado: HTTP 200
+```
+
+### REGRA DE OURO no 228.20
+
+> **Toda vez que rodar `pip install` (mesmo `--upgrade` ou
+> `--force-reinstall`), execute o passo 2 acima EM SEGUIDA.** O pip
+> resolve as deps e puxa numpy/pandas modernos como dependência de
+> qualquer coisa (Streamlit, Plotly, scikit-*, etc.) — daí o problema
+> volta.
+>
+> Alternativa profilática:
+> ```bash
+> sudo /var/www/html/gestao_de_projetos/venv/bin/pip install --no-deps <pacote>
+> ```
+> Isso instala SÓ o pacote pedido, sem resolver deps. Útil pra
+> upgrades cirúrgicos. Mas exige saber que todas as deps já estão lá.
+>
+> Mais simples e seguro: rodar o `install.sh` inteiro de novo — é
+> idempotente e o passo 7/13 limpa as wheels modernas.
+
+### No 238.40 nada disso é problema
+
+O Xeon Gold 5220 tem **AVX, AVX2 e AVX-512**. Pode instalar qualquer
+versão de qualquer wheel do PyPI sem precaução. O passo 7/13 do
+`install.sh` vira no-op inofensivo (os globs não casam nada — pyarrow
+etc. continuam vivos lá).
+
+Recomendação pra quando migrar:
+```bash
+# Após copiar o código pro 238.40 e rodar install.sh, atualize Streamlit
+# pra versão moderna (ganha st.segmented_control no Kanban):
+sudo /var/www/html/gestao_de_projetos/venv/bin/pip install \
+    --upgrade 'streamlit>=1.40,<1.50'
+
+# E NÃO precisa remover numpy/pandas do venv — eles funcionam.
+```
+
+---
+
 ## 9. Troubleshooting comum
 
 | Sintoma | Causa | Solução |
 |---|---|---|
-| `Illegal instruction (core dumped)` no log do systemd | Wheel do PyPI usando AVX/AVX2 | Confirma que o `install.sh` removeu `numpy*`/`pandas*`/`pyarrow*` do venv: `ls /var/www/html/gestao_de_projetos/venv/lib/python3.*/site-packages/ \| grep -iE '^(numpy\|pandas\|pyarrow)'` deve estar vazio |
+| `Illegal instruction (core dumped)` no log do systemd OU término silencioso no foreground | Wheel do PyPI usando AVX/AVX2 (no 228.20 ou hardware similar sem AVX2) | **Veja a seção 8.5 acima** — solução completa documentada |
 | `ModuleNotFoundError: No module named 'X'` | Lib não instalada | `sudo /var/www/html/gestao_de_projetos/venv/bin/pip install X` + `sudo systemctl restart gestao-de-projetos` |
 | `Port 8501 is already in use` | systemd já tá rodando | É normal — não rode manual; use `sudo systemctl restart gestao-de-projetos` |
 | Browser fica em "CONNECTING..." | WebSocket bloqueado | Confirma `a2enmod proxy proxy_http` e que o vhost tem `upgrade=websocket` no `ProxyPass` |
