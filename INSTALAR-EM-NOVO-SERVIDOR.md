@@ -62,6 +62,16 @@ de referência: o app rodando em `http://<IP-DO-SERVIDOR>/gestao-de-projetos/`.
 > - **ruff** configurado em `pyproject.toml`. Rodar manualmente:
 >   `ruff check .` (lint) e `ruff format .` (format). Não é instalado pelo
 >   `install.sh` (é dev-only).
+> - **Timezone fixado em `America/Sao_Paulo`** em 3 camadas pra evitar offset
+>   UTC+3 nas datas exibidas:
+>   1. `gestao-de-projetos.service` — `Environment="TZ=America/Sao_Paulo"`
+>      faz `datetime.now()` retornar SP em vez de UTC.
+>   2. `database.conectar()` — manda `SET TIME ZONE 'America/Sao_Paulo'`
+>      logo após conectar (psycopg crua).
+>   3. `database.get_engine()` — event listener `connect` no SQLAlchemy
+>      pool aplica o mesmo `SET TIME ZONE` em cada conexão criada.
+>   Resultado: timestamps consistentes em SP em toda a stack (Python,
+>   psycopg cru, SQLAlchemy engine, Postgres).
 > - **Streamlit pinado em 1.39.0** porque é o **último que NÃO exige
 >   pyarrow** como dep obrigatória. Em CPU sem AVX2 (Athlon II X2 do
 >   228.20), pyarrow do PyPI **crasha com SIGILL** ao importar.

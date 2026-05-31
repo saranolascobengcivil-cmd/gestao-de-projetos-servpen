@@ -38,17 +38,32 @@ def conectar():
     Use para cursor manual em INSERT/UPDATE/DELETE. Para SELECT com
     pandas (`pd.read_sql_query`), prefira `get_engine()` — evita warning
     do pandas e reusa conexões do pool.
+
+    A session do Postgres recebe `SET TIME ZONE 'America/Sao_Paulo'` logo
+    após conectar — assim `CURRENT_TIMESTAMP` e demais funções de hora
+    devolvem SP, batendo com `datetime.now()` no Python (que também sai
+    em SP por causa do `TZ=America/Sao_Paulo` no systemd unit).
     """
     url = os.environ.get('DATABASE_URL')
     if url:
-        return psycopg.connect(url)
-    return psycopg.connect(
-        host=os.environ.get('DB_HOST', 'localhost'),
-        port=int(os.environ.get('DB_PORT', '5432')),
-        dbname=os.environ.get('DB_NAME', 'gestao_servpen'),
-        user=os.environ.get('DB_USER', 'gestao_servpen'),
-        password=os.environ.get('DB_PASSWORD', ''),
-    )
+        _conn = psycopg.connect(url)
+    else:
+        _conn = psycopg.connect(
+            host=os.environ.get('DB_HOST', 'localhost'),
+            port=int(os.environ.get('DB_PORT', '5432')),
+            dbname=os.environ.get('DB_NAME', 'gestao_servpen'),
+            user=os.environ.get('DB_USER', 'gestao_servpen'),
+            password=os.environ.get('DB_PASSWORD', ''),
+        )
+    try:
+        with _conn.cursor() as _c:
+            _c.execute("SET TIME ZONE 'America/Sao_Paulo'")
+        _conn.commit()
+    except Exception:
+        # Falha em setar TZ não bloqueia a conexão — só deixa Postgres
+        # responder no timezone default (UTC). Log o erro mas continua.
+        log.warning("não consegui setar TimeZone=America/Sao_Paulo na conexão", exc_info=True)
+    return _conn
 
 
 def _montar_database_url():
@@ -100,7 +115,7 @@ def get_engine():
       - pool_recycle=3600 → recicla conexões com >1h pra evitar idle timeout
       - pool_pre_ping=True → testa conexão antes de cada uso (pega conn morta)
     """
-    return create_engine(
+    _eng = create_engine(
         _montar_database_url(),
         pool_size=5,
         max_overflow=5,
@@ -108,6 +123,24 @@ def get_engine():
         pool_pre_ping=True,
         future=True,
     )
+
+    # Garante TimeZone=America/Sao_Paulo em CADA conexão criada pelo pool
+    # (event listener do SQLAlchemy). Combina com TZ no systemd unit pra
+    # ter o stack todo em SP.
+    from sqlalchemy import event as _sa_event
+    @_sa_event.listens_for(_eng, "connect")
+    def _set_tz_sp(dbapi_conn, _conn_record):
+        try:
+            with dbapi_conn.cursor() as _c:
+                _c.execute("SET TIME ZONE 'America/Sao_Paulo'")
+            dbapi_conn.commit()
+        except Exception:
+            log.warning(
+                "não consegui setar TimeZone na conexão SQLAlchemy",
+                exc_info=True,
+            )
+
+    return _eng
 
 
 # ─── HASH DE SENHA ────────────────────────────────────────
