@@ -4257,6 +4257,14 @@ else:
             _hoje_chat = datetime.now().date()
             _ultimo_dia = None
 
+            # Marcador "novas mensagens" estilo WhatsApp — set de IDs que
+            # estavam não-lidos quando o usuário entrou nesta conversa.
+            # Capturado pelo `with t_chat:` antes do db.marcar_lidas.
+            _marc_state = st.session_state.get('_chat_marcador_novas')
+            _ids_novas_marc = (_marc_state[1] if _marc_state
+                               and _marc_state[0] == contato_nome else set())
+            _separador_inserido = False
+
             # `enumerate` pra ter um índice único como salvaguarda nos keys
             # (defensivo: se algum dia df_m tiver linha duplicada por bug
             # de query/migração, keys colidem; índice torna unique).
@@ -4264,6 +4272,31 @@ else:
                 sou_eu = m['remetente'] == usuario
                 _msg_id = int(m['id'])
                 _kfx = f"{_msg_id}_{_idx_m}"   # sufixo de key
+
+                # ── SEPARADOR "novas mensagens" ────────────────────
+                # Insere ANTES da primeira mensagem cujo id está no
+                # marcador (i.e. que era não-lida quando você abriu).
+                if (_ids_novas_marc and not _separador_inserido
+                        and _msg_id in _ids_novas_marc):
+                    _qtd_novas = len(_ids_novas_marc)
+                    _txt_novas = (f"{_qtd_novas} mensagem nova"
+                                  if _qtd_novas == 1
+                                  else f"{_qtd_novas} mensagens novas")
+                    st.markdown(
+                        f"<div style='text-align:center;margin:14px 0 6px;"
+                        f"display:flex;align-items:center;gap:8px;'>"
+                        f"<div style='flex:1;height:1px;"
+                        f"background:rgba(59,130,246,0.35);'></div>"
+                        f"<span style='background:#1e3a5f;color:#93c5fd;"
+                        f"font-size:11px;font-weight:700;padding:3px 12px;"
+                        f"border-radius:12px;border:1px solid #3b82f6;'>"
+                        f"⬇ {_txt_novas}</span>"
+                        f"<div style='flex:1;height:1px;"
+                        f"background:rgba(59,130,246,0.35);'></div>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                    _separador_inserido = True
 
                 # Separador de dia
                 try:
@@ -4635,6 +4668,36 @@ else:
         )
 
         if contato:
+            # ── MARCADOR "novas mensagens" estilo WhatsApp ─────────────
+            # Captura os IDs que ESTAVAM não-lidos no momento que o usuário
+            # entrou nesta conversa. O `_render_chat_messages` usa isso pra
+            # inserir um separador "⬇ N nova(s) mensagem(ns)" acima da
+            # primeira mensagem nova.
+            #
+            # Sem falso positivo:
+            #  - Quando o usuário PERMANECE na conversa e chega nova msg
+            #    pelo fragmento, o `_ids_novas` armazenado em session_state
+            #    NÃO é re-capturado (a nova msg fica abaixo do separador,
+            #    como esperado — "veio depois de você abrir").
+            #  - Quando ele TROCA de contato e volta, recapturamos — como
+            #    tudo já foi marcado lido, `_ids_novas` fica vazio e o
+            #    separador não aparece. Idêntico ao WhatsApp.
+            _chave_nl = '_chat_marcador_novas'
+            _cur_marc = st.session_state.get(_chave_nl)
+            if _cur_marc is None or _cur_marc[0] != contato:
+                _conn_nl = db.conectar(); _c_nl = _conn_nl.cursor()
+                try:
+                    _c_nl.execute(
+                        "SELECT id FROM chat "
+                        "WHERE remetente = %s AND destinatario = %s "
+                        "AND lido_em IS NULL",
+                        (contato, st.session_state.usuario),
+                    )
+                    _ids_novas = {int(r[0]) for r in _c_nl.fetchall()}
+                finally:
+                    _conn_nl.close()
+                st.session_state[_chave_nl] = (contato, _ids_novas)
+
             # Marca como lidas todas as mensagens recebidas desse contato
             db.marcar_lidas(st.session_state.usuario, contato)
             # 2. Render do paineil de mensagens (auto-refresh 2s via fragmento)
