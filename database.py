@@ -660,6 +660,9 @@ def criar_tabelas():
             ("diario",                "anexo",              "TEXT"),
             ("diario",                "resolvido",          "INTEGER DEFAULT 0"),
             ("chat",                  "lido_em",            "TIMESTAMP"),
+            # Marca quando a mensagem foi editada — UI mostra "(editado)"
+            # do lado do horário, no estilo WhatsApp/Telegram.
+            ("chat",                  "editado_em",         "TIMESTAMP"),
             ("agenda",                "local",              "TEXT"),
             ("mencoes_notificacoes",  "dispensado_em",      "TIMESTAMP"),
         ]
@@ -996,9 +999,18 @@ def excluir_mensagem_chat(id_msg):
         conn.close()
 
 def editar_mensagem_chat(id_msg, nova_mensagem):
+    """Atualiza o texto da mensagem e marca `editado_em` como agora.
+
+    `editado_em` é usado pela UI pra mostrar "(editado)" embaixo da
+    bolha, no estilo do WhatsApp/Telegram.
+    """
     conn = conectar(); c = conn.cursor()
     try:
-        c.execute("UPDATE chat SET mensagem = %s WHERE id = %s", (nova_mensagem, id_msg))
+        c.execute(
+            "UPDATE chat SET mensagem = %s, editado_em = CURRENT_TIMESTAMP "
+            "WHERE id = %s",
+            (nova_mensagem, id_msg),
+        )
         conn.commit()
     finally:
         conn.close()

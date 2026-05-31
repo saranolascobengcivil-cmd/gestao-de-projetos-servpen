@@ -4225,12 +4225,31 @@ else:
                              if not sou_eu else "")
                 _classe = "mine" if sou_eu else "theirs"
 
+                # Marca "(editado)" se a mensagem foi modificada — estilo
+                # WhatsApp. Coluna editado_em populada por editar_mensagem_chat.
+                _edit_marker = ""
+                _ed_raw = m.get('editado_em') if 'editado_em' in m else None
+                if _ed_raw is not None and not (
+                    isinstance(_ed_raw, float) and pd.isna(_ed_raw)
+                ):
+                    try:
+                        _ed_dt = pd.to_datetime(_ed_raw, errors='coerce')
+                        if pd.notna(_ed_dt):
+                            _edit_marker = (
+                                " <span style='opacity:.55;font-style:italic;"
+                                "font-size:9.5px;' "
+                                f"title='Editado em {_ed_dt.strftime('%d/%m/%Y %H:%M')}'>"
+                                "(editado)</span>"
+                            )
+                    except Exception:
+                        pass
+
                 _bolha_html = (
                     f"<div class='wa-row {_classe}'>"
                     f"<div class='wa-bub {_classe}'>"
                     f"{_who_html}"
                     f"{_safe_chat_html(m['mensagem'])}"
-                    f"<div class='wa-meta'>{_horario}</div>"
+                    f"<div class='wa-meta'>{_edit_marker}{_horario}</div>"
                     f"</div></div>"
                 )
 
