@@ -292,6 +292,20 @@ section[data-testid="stMain"] .block-container,
     background: transparent !important;
 }
 
+/* Esconde o falso-positivo "Missing Submit Button" do Streamlit que pisca
+ * brevemente em F5. O form de login TEM `st.form_submit_button("ACESSAR")`;
+ * o warning é uma race condition do componente Form do Streamlit (AV no
+ * bundle React): quando os elementos são streamados pro browser, há uma
+ * janela onde o scriptRunState já virou NOT_RUNNING mas o submit_button
+ * ainda não foi adicionado ao mapa `formsData.submitButtons`. Como nesta
+ * tela só existe 1 form e ele é controlado, é seguro suprimir QUALQUER
+ * alerta dentro do form — st.error de login falho é renderizado FORA
+ * do `with st.form(...)`. Se um dia adicionar st.error/warning DENTRO
+ * do form, isto esconderia também — basta restringir o seletor. */
+[data-testid="stForm"] [data-testid="stAlert"] {
+    display: none !important;
+}
+
 .login-footer {
     text-align: center;
     color: #4a4a4a;
