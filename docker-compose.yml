@@ -1,0 +1,42 @@
+# docker-compose.yml — Postgres local pra desenvolvimento.
+#
+# NÃO usar em produção. Em produção (servidor 238.40) o Postgres roda nativo
+# como serviço systemd, configurado pelo install.sh.
+#
+# Subir:    docker compose up -d
+# Parar:    docker compose down            (mantém dados no volume)
+# Limpar:   docker compose down -v         (APAGA o volume — perde tudo)
+# Status:   docker compose ps
+# Logs:     docker compose logs -f postgres
+# psql:     docker compose exec postgres psql -U gestao_servpen
+#
+# Conecta:
+#   host=localhost  port=5432
+#   user/pass/db de acordo com db.env.local
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: gestao-postgres-local
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: gestao_servpen
+      POSTGRES_PASSWORD: dev_local_pwd
+      POSTGRES_DB: gestao_servpen
+      # São Paulo pra bater com a config do app
+      TZ: America/Sao_Paulo
+      PGTZ: America/Sao_Paulo
+    ports:
+      # Expõe 5432 só no localhost — não deixa qualquer um da rede entrar
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gestao_servpen -d gestao_servpen"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+    name: gestao-pgdata-local
