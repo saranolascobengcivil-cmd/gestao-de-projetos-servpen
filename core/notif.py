@@ -105,22 +105,40 @@ def _chat_toast_html(remetente: str, qtd: int):
                     doc.body.appendChild(stack);
                 }}
 
-                // Função pra fechar — animação por inline style + remoção.
-                // Inline style é mais confiável que CSS @keyframes nesse
-                // contexto (alguns browsers/CSP bloqueavam a animação).
-                function closeToast(toast) {{
-                    if (!toast || !toast.parentElement) return;
-                    if (toast.__timer) {{ clearTimeout(toast.__timer); }}
-                    toast.style.transition =
-                        'transform .2s ease-in, opacity .2s ease-in';
-                    toast.style.transform = 'translateX(120%)';
-                    toast.style.opacity = '0';
-                    setTimeout(function () {{
-                        if (toast.parentElement) {{
-                            toast.parentElement.removeChild(toast);
-                        }}
-                    }}, 230);
+                // Função pra fechar.
+                //
+                // CRUCIAL: defina como FUNÇÃO GLOBAL NO TOP FRAME
+                // (window.parent.waCloseToast), não como função local desta
+                // IIFE. Razão: cada chamada de _chat_toast_html cria um
+                // NOVO iframe (components.html); o iframe ANTERIOR é
+                // destruído. Se o `onclick` do botão ✖ apontar pra função
+                // do iframe antigo, depois que ele morrer o clique não
+                // dispara nada (silenciosamente — "botão fechar não
+                // funciona"). Definindo no top frame, sobrevive.
+                //
+                // Idempotente: só atribui uma vez. Funções pegam toast por
+                // argumento + acessam DOM do parent (já estamos no parent).
+                if (!doc.defaultView.waCloseToast) {{
+                    var TOP = doc.defaultView;
+                    doc.defaultView.waCloseToast = function (toast) {{
+                        if (!toast || !toast.parentElement) return;
+                        // setTimeout/clearTimeout explícitos no TOP FRAME
+                        // (evita ambiguidade: dependendo de como o engine
+                        // resolve identifier `setTimeout` dentro desta
+                        // função, podia pegar o do iframe — que morre).
+                        if (toast.__timer) {{ TOP.clearTimeout(toast.__timer); }}
+                        toast.style.transition =
+                            'transform .2s ease-in, opacity .2s ease-in';
+                        toast.style.transform = 'translateX(120%)';
+                        toast.style.opacity = '0';
+                        TOP.setTimeout(function () {{
+                            if (toast.parentElement) {{
+                                toast.parentElement.removeChild(toast);
+                            }}
+                        }}, 230);
+                    }};
                 }}
+                var closeToast = doc.defaultView.waCloseToast;
 
                 // Se já tem toast desse remetente, atualiza qtd e renova timer
                 var existing = stack.querySelector(
@@ -184,13 +202,27 @@ def _chat_toast_html(remetente: str, qtd: int):
                              'chat?_goto_chat=' + encodeURIComponent(REM));
                 }}
 
-                // Botão ✖ fecha
-                toast.querySelector('.wa-toast-close')
-                     .addEventListener('click', function () {{ closeToast(toast); }});
+                // Botão ✖ fecha.
+                //
+                // Usa `.onclick = ...` em vez de `.addEventListener('click', ...)`
+                // porque `onclick` SOBRESCREVE o handler anterior (uma só
+                // função por elemento), enquanto `addEventListener` ACUMULA
+                // — cada re-render do toast (a cada 10s ou após atualizar
+                // qtd) penduraria mais um listener. Pior: como
+                // re-escrevemos o innerHTML antes, o botão é um elemento
+                // novo — mas o `addEventListener` apontaria pra função do
+                // iframe ANTIGO (já destruído pelo Streamlit), virando
+                // listener zumbi que não dispara. `onclick` sempre aponta
+                // pra função do iframe ATUAL (na real, pra `closeToast` que
+                // mora no top frame).
+                toast.querySelector('.wa-toast-close').onclick = function () {{
+                    closeToast(toast);
+                }};
                 // Click em "Ver mensagem" também fecha (não chama
                 // preventDefault — deixa o <a> navegar normal).
-                toast.querySelector('.wa-btn-go')
-                     .addEventListener('click', function () {{ closeToast(toast); }});
+                toast.querySelector('.wa-btn-go').onclick = function () {{
+                    closeToast(toast);
+                }};
 
                 if (!existing) {{
                     stack.appendChild(toast);
@@ -198,8 +230,12 @@ def _chat_toast_html(remetente: str, qtd: int):
                     clearTimeout(toast.__timer);
                 }}
 
-                // Auto-fecha em 30s
-                toast.__timer = setTimeout(function () {{
+                // Auto-fecha em 30s.
+                // Usa `doc.defaultView.setTimeout` (timer do top frame),
+                // não `setTimeout` do iframe — pelo mesmo motivo do
+                // `closeToast` global: garante que o timer sobreviva ao
+                // iframe ser destruído pelo Streamlit no próximo tick.
+                toast.__timer = doc.defaultView.setTimeout(function () {{
                     closeToast(toast);
                 }}, 30000);
             }} catch (e) {{ console.warn('wa-toast:', e); }}

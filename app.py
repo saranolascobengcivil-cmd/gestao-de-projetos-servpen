@@ -114,6 +114,30 @@ if not st.session_state.get("autenticado", False):
         st.session_state.usuario = _sess[0]
         st.session_state.perfil = _sess[1]
 
+# ── ANTI-FANTASMA DO TOAST DE CHAT ─────────────────────────────────────
+# Bug histórico: clicar em "📨 Ver mensagem" no toast fazia page-reload
+# (`<a target="_top">`). Page-reload ZERA o session_state. No primeiro tick
+# do fragmento `_global_notif` (a cada 10s), `_chat_ultimas_contagens` volta
+# vazio → ele comparava `{Maria: 5}` (atual) vs `{}` (vazio) e concluía
+# "Maria tem 5 mensagens novas!" — disparando o toast de novo, MESMO que o
+# user acabou de clicar nele e já está no chat.
+#
+# Fix: inicializar `_chat_ultimas_contagens` com o estado real do banco
+# logo após o login. Assim o primeiro tick do fragmento vê (Maria: 5) ==
+# (Maria: 5) e NÃO dispara toast falso.
+if (
+    st.session_state.get("autenticado", False)
+    and "_chat_ultimas_contagens" not in st.session_state
+):
+    try:
+        st.session_state["_chat_ultimas_contagens"] = dict(
+            db.listar_remetentes_com_nao_lidas(st.session_state.usuario)
+        )
+    except Exception:
+        # Sem ler do banco aqui ainda é OK — pior caso o user vê um toast
+        # extra. Não vale travar o boot inteiro por isso.
+        st.session_state["_chat_ultimas_contagens"] = {}
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # 5. INICIALIZAÇÃO DO BANCO E PASTAS
