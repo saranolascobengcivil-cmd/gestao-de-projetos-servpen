@@ -1025,17 +1025,23 @@ if "projeto_em_edicao" in st.session_state:
                    f"nome='{ed_nm}' tags='{_tags_csv_save or ''}'")
         del st.session_state.projeto_em_edicao
         _invalidar_dados()
+        # st.toast sobrevive ao st.rerun (vive no overlay, fora do script
+        # run). st.success aqui apareceria por <300ms antes do rerun zerar
+        # — efeito "pisca" reclamado pelo user.
+        st.toast(f"💾 Projeto **{ed_nm}** salvo.", icon="✅")
         st.rerun()
 
     if _excluir:
         if not confirmar_del:
             st.warning("Marque a caixa de confirmação antes de excluir.")
         else:
+            _nome_excl = dados["projeto"]
             db.excluir_projeto(id_ed)
             db.log_aud(usuario, "excluir", "projeto", id_ed,
-                       f"nome='{dados['projeto']}'")
+                       f"nome='{_nome_excl}'")
             del st.session_state.projeto_em_edicao
             _invalidar_dados()
+            st.toast(f"🗑️ Projeto **{_nome_excl}** excluído.", icon="✅")
             st.rerun()
 
     if _clonar:
@@ -1046,10 +1052,10 @@ if "projeto_em_edicao" in st.session_state:
                 f"origem='{dados['projeto']}' -> novo_id={novo_id}",
             )
             _invalidar_dados()
-            st.success(
-                f"📋 Projeto clonado! Novo id={novo_id} criado em "
-                f"**Em Espera**. Abrindo edição pra você ajustar "
-                f"nome/datas/equipe."
+            # st.toast em vez de st.success — sobrevive ao rerun abaixo.
+            st.toast(
+                f"📋 Projeto clonado (id={novo_id}). Abrindo edição.",
+                icon="✅",
             )
             st.session_state.projeto_em_edicao = int(novo_id)
             st.rerun()
@@ -1176,7 +1182,7 @@ if "projeto_em_edicao" in st.session_state:
             [e for e in novas_etapas if str(e["nome"]).strip()],
         )
         st.session_state[_key_et] = db.listar_etapas(id_ed)
-        st.success("Etapas salvas!")
+        st.toast("✅ Etapas salvas!", icon="💾")
         st.rerun()
 
     # Mini-Gantt das etapas
@@ -1351,5 +1357,5 @@ if "projeto_em_edicao" in st.session_state:
                     )
                 _c.commit()
                 _c.close()
-                st.success("Evolução salva!")
+                st.toast("📈 Evolução salva!", icon="✅")
                 st.rerun()

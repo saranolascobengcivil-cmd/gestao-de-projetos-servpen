@@ -531,8 +531,8 @@ if _pode_editar():
                             ),
                         )
 
-                    st.success("Registro salvo!")
                     _invalidar_dados()
+                    st.toast("📝 Registro salvo!", icon="✅")
                     st.rerun()
                 except Exception as exc:
                     erro_humano(

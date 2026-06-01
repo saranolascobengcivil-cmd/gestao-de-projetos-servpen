@@ -775,13 +775,13 @@ with col_form:
                            _ed_id, titulo_ev)
                 if "agenda_edit_id" in st.session_state:
                     del st.session_state.agenda_edit_id
-                st.success("Compromisso atualizado!")
+                st.toast("📅 Compromisso atualizado!", icon="✅")
             else:
                 db.salvar_evento(titulo_ev, tipo_ev, d_ini, d_fim,
                                  resp_ev, obs_ev, local_ev)
                 db.log_aud(usuario_atual, "criar", "agenda", None,
                            titulo_ev)
-                st.success("Compromisso registrado!")
+                st.toast("📅 Compromisso registrado!", icon="✅")
             st.rerun()
         else:
             st.warning("Título e Envolvidos são obrigatórios.")

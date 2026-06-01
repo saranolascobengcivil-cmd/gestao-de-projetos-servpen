@@ -38,7 +38,7 @@ with st.expander("⚙️ Gerenciar Disciplinas do Checklist"):
     if st.button("Adicionar Disciplina", key="btn_add_disc"):
         if nova_disc and nova_disc not in st.session_state.lista_checklist:
             st.session_state.lista_checklist.append(nova_disc)
-            st.success(f"'{nova_disc}' adicionada!")
+            st.toast(f"➕ '{nova_disc}' adicionada!", icon="✅")
             st.rerun()
 
 # ── Formulário principal ──────────────────────────────────
@@ -231,11 +231,16 @@ if submit_novo:
                 {"nome": "Levantamento", "duracao_dias": 5, "dias_offset": 0},
                 {"nome": "Projeto", "duracao_dias": 10, "dias_offset": 5},
             ]
-            st.success(
-                f"✅ Projeto **{f_nm}** criado! Ele está na coluna "
-                f"**Em Espera** do Kanban."
-            )
+            # Usar st.toast e NÃO st.success: o st.rerun() abaixo zera o
+            # script, então st.success aparece por ~200ms e some — efeito
+            # "pisca" reclamado pelo user. O st.toast sobrevive ao rerun
+            # (vive ~4s no overlay do Streamlit, fora do script run).
             _invalidar_dados()
+            st.toast(
+                f"✅ Projeto **{f_nm}** criado! Está na coluna "
+                f"**Em Espera** do Kanban.",
+                icon="🎉",
+            )
             st.rerun()
         else:
             st.error("Erro técnico ao salvar no banco de dados.")

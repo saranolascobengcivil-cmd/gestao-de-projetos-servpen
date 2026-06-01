@@ -18,14 +18,113 @@ Estrutura desta arquivo:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as _components
 
 import database as db
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# AUTH BRIDGE: localStorage <-> ?t=TOKEN (sobrevive nova aba)
+# ═══════════════════════════════════════════════════════════════════════
+# O Streamlit cria um session_state NOVO a cada conexão WebSocket — abrir
+# nova aba significa nova sessão sem login. O `?t=TOKEN` na URL resolve
+# F5 mas não Ctrl+T (nova aba não herda querystring).
+#
+# Solução: espelhar o token em `localStorage` (visível por todas as abas
+# da mesma origem) e injetar JS que, ao detectar `?t=` ausente, recarrega
+# a aba com `?t=TOKEN` lido do storage. Defesa anti-loop via sessionStorage
+# `_auth_tried` (não sobrevive ao próprio reload se foi setada e a aba
+# voltou com `?t=` — Python apaga abaixo).
+_AUTH_LS_KEY = "servpen_session"
+_AUTH_TRIED_KEY = "_servpen_auth_tried"
+
+
+def _bridge_save_token(token: str) -> None:
+    """Salva o token em localStorage e limpa flag anti-loop.
+
+    Chamado depois do auto-login bem-sucedido. Sem isso, abrir nova aba
+    cairia na tela de login mesmo com sessão válida no banco.
+    """
+    _components.html(
+        f"""
+        <script>
+        try {{
+            var tok = {json.dumps(token)};
+            window.parent.localStorage.setItem(
+                {json.dumps(_AUTH_LS_KEY)}, tok
+            );
+            // Limpa o flag — login OK, próximo reload pode tentar de novo
+            // se algum dia o token sumir da URL.
+            window.parent.sessionStorage.removeItem(
+                {json.dumps(_AUTH_TRIED_KEY)}
+            );
+        }} catch (e) {{ console.warn('auth-bridge save:', e); }}
+        </script>
+        """,
+        height=0,
+    )
+
+
+def _bridge_try_restore() -> None:
+    """Tenta restaurar a sessão de outra aba via localStorage.
+
+    Injeta JS que, se a URL não tem `?t=` mas o localStorage tem token
+    e ainda não tentamos nesta aba, recarrega com `?t=TOKEN`. Se o token
+    for inválido, o Python descarta e o user vê a tela de login — o flag
+    anti-loop garante que não fica recarregando em ciclo.
+    """
+    _components.html(
+        f"""
+        <script>
+        (function () {{
+            try {{
+                var url = new URL(window.parent.location.href);
+                if (url.searchParams.get('t')) return;
+                var TRIED = {json.dumps(_AUTH_TRIED_KEY)};
+                if (window.parent.sessionStorage.getItem(TRIED)) return;
+                var tok = window.parent.localStorage.getItem(
+                    {json.dumps(_AUTH_LS_KEY)}
+                );
+                if (!tok) return;
+                window.parent.sessionStorage.setItem(TRIED, '1');
+                url.searchParams.set('t', tok);
+                window.parent.location.replace(url.toString());
+            }} catch (e) {{ console.warn('auth-bridge restore:', e); }}
+        }})();
+        </script>
+        """,
+        height=0,
+    )
+
+
+def _bridge_clear() -> None:
+    """Limpa o token do localStorage. Chamado no logout.
+
+    Sem isso, depois de "Sair" o user abriria nova aba e seria
+    auto-logado de novo via localStorage stale.
+    """
+    _components.html(
+        f"""
+        <script>
+        try {{
+            window.parent.localStorage.removeItem(
+                {json.dumps(_AUTH_LS_KEY)}
+            );
+            window.parent.sessionStorage.removeItem(
+                {json.dumps(_AUTH_TRIED_KEY)}
+            );
+        }} catch (e) {{ console.warn('auth-bridge clear:', e); }}
+        </script>
+        """,
+        height=0,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -118,6 +217,8 @@ if not st.session_state.get("autenticado", False):
         # clicar num link de página OU no toast de chat fazia o user perder
         # o ?t= e cair pra tela de login.
         st.query_params["t"] = _tok
+        # Espelha em localStorage pra outras abas/janelas reaproveitarem.
+        _bridge_save_token(_tok)
 
 # ── ANTI-FANTASMA DO TOAST DE CHAT ─────────────────────────────────────
 # Bug histórico: clicar em "📨 Ver mensagem" no toast fazia page-reload
@@ -487,6 +588,15 @@ if _eh_tema_claro():
 # 8. TELA DE LOGIN (se não autenticado)
 # ═══════════════════════════════════════════════════════════════════════
 if not st.session_state.autenticado:
+    # Antes de pintar a tela de login, tenta restaurar a sessão de OUTRA
+    # ABA via localStorage. Se houver token salvo e este reload ainda não
+    # tentou (sessionStorage flag), recarrega com `?t=TOKEN`. Se o token
+    # for válido, o próximo run cai no auto-login acima e nem chega aqui.
+    # Se for inválido (expirado, revogado), Python descarta e renderiza
+    # a tela de login normalmente — o flag anti-loop garante que não fica
+    # recarregando em ciclo.
+    _bridge_try_restore()
+
     from core.auth_ui import tela_login
     tela_login()
     st.stop()
@@ -579,6 +689,9 @@ with st.sidebar:
         st.session_state.autenticado = False
         st.session_state.usuario = None
         st.session_state.perfil = None
+        # Limpa o token em localStorage — sem isso, abrir nova aba após
+        # "Sair" auto-logaria de novo via bridge restore (token stale).
+        _bridge_clear()
         st.rerun()
 
     # Toggle de Tema (Claro / Escuro)

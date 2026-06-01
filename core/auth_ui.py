@@ -175,7 +175,9 @@ def _dialog_meu_perfil():
     db.log_aud(nome, "editar_perfil", "usuario", None,
                "cargo/email/avatar/pergunta")
     _invalidar_dados()
-    st.success("Perfil atualizado!")
+    # Toast em vez de success: o st.rerun() abaixo fecha o dialog e zera o
+    # script — st.success piscaria por <200ms. O toast vive no overlay.
+    st.toast("✅ Perfil atualizado!", icon="👤")
     st.rerun()
 
 
@@ -343,7 +345,7 @@ def tela_login():
             _token = db.criar_sessao(u, dias=7)
             st.query_params["t"] = _token
             db.log_aud(u, "login", "sessao", None, "sucesso")
-            st.success("Login realizado!")
+            st.toast("✅ Login realizado!", icon="🔓")
             st.rerun()
         else:
             # Distingue rate-limit de senha inválida (auth.py popula

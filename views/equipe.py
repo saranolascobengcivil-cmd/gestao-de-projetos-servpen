@@ -304,7 +304,7 @@ for _, u in df_membros.iterrows():
                 conn.close()
                 st.session_state[f"editor_u_{u['id']}"] = False
                 _invalidar_dados()
-                st.success(_msg)
+                st.toast(_msg, icon="✅")
                 st.rerun()
 
 st.markdown("<br>", unsafe_allow_html=True)
