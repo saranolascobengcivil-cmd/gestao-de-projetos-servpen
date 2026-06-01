@@ -1,0 +1,1315 @@
+"""Aba Kanban — quadro visual com 3 modos: Kanban, Lista, Resumo.
+
+Inclui a central de edição do projeto (form completo + etapas inline + evolução
+técnica por disciplina). Os helpers `_render_lista_kanban` e
+`_render_resumo_kanban` estão neste mesmo módulo pois só são usados aqui.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+
+import database as db
+
+from core.data import _invalidar_dados, _load_df_d, _load_df_p, _load_df_u
+from core.helpers import (
+    _badge_status,
+    _empty_state,
+    _estiliza_plotly,
+    _pill_select,
+    _pode_editar,
+    _render_tag_chips,
+)
+
+
+usuario = st.session_state.usuario
+perfil = st.session_state.get("perfil", "Gestor")
+df_p = _load_df_p(usuario, perfil)
+df_u = _load_df_u()
+df_d = _load_df_d()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# HELPERS (visões alternativas do Kanban)
+# ══════════════════════════════════════════════════════════════════════
+def _render_lista_kanban(df_kanban, df_d):
+    """Visão 'Lista' do Kanban: tabela densa com sort + checkbox por linha
+    + toolbar de bulk actions (mover status, adicionar tag em lote).
+
+    Pensada pra triagem rápida quando há muitos projetos. Bulk actions
+    aceleram operações típicas tipo "mover 5 finalizados pra Concluído" ou
+    "marcar todos com tag Aguardando Cliente".
+    """
+    if df_kanban.empty:
+        _empty_state(
+            "📋", "Nenhum projeto pra mostrar",
+            "Limpe a busca/filtros acima ou cadastre um projeto novo.",
+            cor_borda="#7c3aed",
+        )
+        return
+
+    # Ordenação
+    _opcoes_sort = {
+        "Prioridade ↓ → Status":      ["_ord_pri", "status"],
+        "Nome (A-Z)":                 ["projeto"],
+        "Projetista (A-Z)":           ["projetista"],
+        "Prazo (mais próximo)":       ["_prazo_dt"],
+        "Status":                     ["status", "projeto"],
+    }
+    _sort_label = st.selectbox(
+        "Ordenar por", list(_opcoes_sort.keys()),
+        key="kanban_lista_sort", label_visibility="collapsed",
+    )
+    df_l = df_kanban.copy()
+    _ord_pri_map = {"Máxima": 0, "Média": 1, "Mínima": 2}
+    df_l["_ord_pri"] = df_l.get("prioridade", "").map(
+        lambda x: _ord_pri_map.get(str(x).strip(), 3)
+    )
+    df_l["_prazo_dt"] = pd.to_datetime(
+        df_l.get("data_termino").fillna(df_l.get("data_fim", "")),
+        errors="coerce",
+    )
+    df_l = df_l.sort_values(_opcoes_sort[_sort_label])
+
+    # ── BULK SELECTION STATE ─────────────────────────────────────
+    _ids_visiveis = set(int(x) for x in df_l["id"].tolist())
+    sel_ids = st.session_state.setdefault("kanban_bulk_sel", set())
+    sel_ids = sel_ids & _ids_visiveis
+    st.session_state["kanban_bulk_sel"] = sel_ids
+
+    # ── TOOLBAR DE BULK ACTIONS (só aparece se houver seleção) ──
+    if sel_ids and _pode_editar():
+        with st.container(border=True):
+            st.markdown(
+                f"<div style='color:#3b82f6;font-weight:600;font-size:.9rem;"
+                f"margin-bottom:6px;'>"
+                f"☑ {len(sel_ids)} projeto(s) selecionado(s)</div>",
+                unsafe_allow_html=True,
+            )
+            with st.form("bulk_actions_form", clear_on_submit=False):
+                bc1, bc2, bc3, bc4 = st.columns([2, 2, 1, 1])
+                _novo_status = bc1.selectbox(
+                    "Mover pra status",
+                    options=["— (não mudar)", "Em Espera", "Ativo",
+                             "🛑 Parado", "Cancelado", "Concluído"],
+                    key="bulk_novo_status",
+                )
+                _tags_disp = db.listar_tags_existentes()
+                _opcoes_tag = ["— (não mudar)"] + _tags_disp
+                _tag_add = bc2.selectbox(
+                    "Adicionar tag",
+                    options=_opcoes_tag,
+                    key="bulk_tag_add",
+                    help=(
+                        "Adiciona a tag a TODOS os projetos selecionados. "
+                        "Não remove tags existentes — só acrescenta."
+                    ),
+                )
+                _aplicar = bc3.form_submit_button(
+                    "✅ Aplicar", use_container_width=True,
+                )
+                _limpar = bc4.form_submit_button(
+                    "✖ Limpar", use_container_width=True,
+                )
+
+            if _aplicar:
+                _vai_status = (
+                    _novo_status and not _novo_status.startswith("—")
+                )
+                _vai_tag = (_tag_add and not _tag_add.startswith("—"))
+                if not _vai_status and not _vai_tag:
+                    st.warning("Nada selecionado pra mudar.")
+                else:
+                    _n = 0
+                    for _pid in sorted(sel_ids):
+                        if _vai_status:
+                            db.atualizar_campo_projeto(
+                                _pid, "status", _novo_status
+                            )
+                        if _vai_tag:
+                            # Adiciona tag sem perder as existentes
+                            _conn_t = db.conectar()
+                            _c_t = _conn_t.cursor()
+                            try:
+                                _c_t.execute(
+                                    "SELECT tags FROM projetos WHERE id = %s",
+                                    (int(_pid),),
+                                )
+                                _r_t = _c_t.fetchone()
+                                _atuais = db.parse_tags(
+                                    _r_t[0] if _r_t else None
+                                )
+                                if _tag_add not in _atuais:
+                                    _atuais.append(_tag_add)
+                                _novo_csv = (
+                                    db.serializar_tags(_atuais) or None
+                                )
+                                _c_t.execute(
+                                    "UPDATE projetos SET tags = %s "
+                                    "WHERE id = %s",
+                                    (_novo_csv, int(_pid)),
+                                )
+                                _conn_t.commit()
+                            finally:
+                                _conn_t.close()
+                        _n += 1
+                    db.log_aud(
+                        usuario, "bulk_acao", "projeto", None,
+                        f"{_n} projetos · "
+                        f"status={_novo_status if _vai_status else '—'}"
+                        f" · tag={_tag_add if _vai_tag else '—'}",
+                    )
+                    st.session_state["kanban_bulk_sel"] = set()
+                    _invalidar_dados()
+                    st.success(f"✅ {_n} projeto(s) atualizado(s).")
+                    st.rerun()
+
+            if _limpar:
+                st.session_state["kanban_bulk_sel"] = set()
+                st.rerun()
+
+    # ── CABEÇALHO DA TABELA ──────────────────────────────────────
+    _COLS_ET = [0.35, 1.4, 3, 2, 1.5, 1.2, 2, 0.6]
+    hdr = st.columns(_COLS_ET)
+    if _pode_editar():
+        _todos_marcados = (
+            len(sel_ids) > 0 and sel_ids >= _ids_visiveis
+        )
+        _toggle_all = hdr[0].checkbox(
+            "", value=_todos_marcados, key="bulk_sel_all",
+            help="Selecionar/desmarcar todos os visíveis",
+            label_visibility="collapsed",
+        )
+        if _toggle_all and not _todos_marcados:
+            st.session_state["kanban_bulk_sel"] = _ids_visiveis.copy()
+            st.rerun()
+        elif (not _toggle_all) and _todos_marcados:
+            st.session_state["kanban_bulk_sel"] = set()
+            st.rerun()
+    else:
+        hdr[0].markdown(" ")
+    for col_obj, txt in zip(
+        hdr[1:],
+        ["Status", "Projeto", "Projetista", "Prazo", "Prioridade", "Tags", ""],
+    ):
+        col_obj.markdown(
+            f"<small style='color:#94a3b8;text-transform:uppercase;"
+            f"letter-spacing:.5px;font-weight:600;'>{txt}</small>",
+            unsafe_allow_html=True,
+        )
+
+    # ── LINHAS DA TABELA ─────────────────────────────────────────
+    with st.container(height=720, border=False):
+        for _, row in df_l.iterrows():
+            cols = st.columns(_COLS_ET)
+            pid = int(row["id"])
+
+            if _pode_editar():
+                _checked = cols[0].checkbox(
+                    "", value=(pid in sel_ids),
+                    key=f"lista_chk_{pid}",
+                    label_visibility="collapsed",
+                )
+                if _checked:
+                    sel_ids.add(pid)
+                else:
+                    sel_ids.discard(pid)
+            else:
+                cols[0].markdown(" ")
+
+            cols[1].markdown(
+                f"<div style='padding-top:6px;'>"
+                f"{_badge_status(row.get('status'))}</div>",
+                unsafe_allow_html=True,
+            )
+            cols[2].markdown(
+                f"<div style='padding-top:6px;font-weight:600;'>"
+                f"{row.get('projeto', '—')} "
+                f"<span style='color:#64748b;font-weight:400;font-size:11px;'>"
+                f"#{pid}</span></div>",
+                unsafe_allow_html=True,
+            )
+            cols[3].markdown(
+                f"<div style='padding-top:8px;font-size:12px;opacity:.85;'>"
+                f"👤 {row.get('projetista', '—')}</div>",
+                unsafe_allow_html=True,
+            )
+            _prazo = row.get("data_termino") or row.get("data_fim") or "—"
+            cols[4].markdown(
+                f"<div style='padding-top:8px;font-size:12px;'>"
+                f"📅 {_prazo}</div>",
+                unsafe_allow_html=True,
+            )
+            _pri = str(row.get("prioridade", "")).strip()
+            _pri_html = {
+                "Máxima": "<span class='kc-pri-max'>▲ MÁX</span>",
+                "Média":  "<span class='kc-pri-med'>◆ MÉD</span>",
+                "Mínima": "<span class='kc-pri-min'>▼ MÍN</span>",
+            }.get(_pri, "")
+            cols[5].markdown(
+                f"<div style='padding-top:8px;'>{_pri_html}</div>",
+                unsafe_allow_html=True,
+            )
+            cols[6].markdown(
+                f"<div style='padding-top:6px;'>"
+                f"{_render_tag_chips(row.get('tags'), small=True)}</div>",
+                unsafe_allow_html=True,
+            )
+            if cols[7].button("🔍", key=f"lista_ver_{pid}",
+                              help="Abrir detalhes / editar"):
+                st.session_state.projeto_em_edicao = pid
+                st.rerun()
+
+    st.session_state["kanban_bulk_sel"] = sel_ids
+
+
+def _render_resumo_kanban(df_kanban, df_d):
+    """Visão 'Resumo': dashboard executivo com top urgentes + atrasados +
+    distribuição. Pensada como 'visão de cima' pra reuniões/decisão.
+    """
+    if df_kanban.empty:
+        _empty_state(
+            "📊", "Nada pra resumir",
+            "Limpe a busca/filtros acima — sem projetos visíveis não há resumo.",
+            cor_borda="#0891b2",
+        )
+        return
+
+    hoje = datetime.now().date()
+    df_r = df_kanban.copy()
+    df_r["_prazo_dt"] = pd.to_datetime(
+        df_r.get("data_termino").fillna(df_r.get("data_fim", "")),
+        errors="coerce",
+    )
+
+    col_esq, col_dir = st.columns([3, 2])
+
+    with col_esq:
+        st.markdown("### 🔥 Atenção imediata")
+
+        _maxima = df_r[
+            (df_r["status"] == "Em Espera")
+            & (df_r["prioridade"].astype(str).str.strip() == "Máxima")
+        ]
+        _atrasados = df_r[
+            (df_r["status"] == "Ativo")
+            & (df_r["_prazo_dt"].notna())
+            & (df_r["_prazo_dt"].dt.date < hoje)
+        ]
+
+        if _maxima.empty and _atrasados.empty:
+            st.success(
+                "✅ Nenhum projeto urgente no momento — tudo sob controle."
+            )
+        else:
+            if not _maxima.empty:
+                st.markdown(f"**▲ Máxima na fila ({len(_maxima)}):**")
+                for _, r in _maxima.head(10).iterrows():
+                    pid = int(r["id"])
+                    c1, c2 = st.columns([5, 1])
+                    c1.markdown(
+                        f"• **{r['projeto']}** — 👤 {r['projetista']} "
+                        f"· 📅 "
+                        f"{r.get('data_termino') or r.get('data_fim') or '—'}"
+                    )
+                    if c2.button("🔍", key=f"resumo_max_{pid}",
+                                 help="Abrir projeto"):
+                        st.session_state.projeto_em_edicao = pid
+                        st.rerun()
+
+            if not _atrasados.empty:
+                st.markdown(f"**🔴 Atrasados ({len(_atrasados)}):**")
+                for _, r in _atrasados.head(10).iterrows():
+                    pid = int(r["id"])
+                    _dt = (
+                        r["_prazo_dt"].date()
+                        if pd.notna(r["_prazo_dt"]) else None
+                    )
+                    _dias_atraso = (hoje - _dt).days if _dt else 0
+                    c1, c2 = st.columns([5, 1])
+                    c1.markdown(
+                        f"• **{r['projeto']}** — 👤 {r['projetista']} "
+                        f"· 📅 "
+                        f"{_dt.strftime('%d/%m/%Y') if _dt else '—'} "
+                        f"<span style='color:#ef4444;font-weight:600;'>"
+                        f"(−{_dias_atraso}d)</span>",
+                        unsafe_allow_html=True,
+                    )
+                    if c2.button("🔍", key=f"resumo_atr_{pid}",
+                                 help="Abrir projeto"):
+                        st.session_state.projeto_em_edicao = pid
+                        st.rerun()
+
+    with col_dir:
+        st.markdown("### 📊 Distribuição")
+        _dist = (
+            df_r.groupby("status").size()
+            .reset_index(name="qtd")
+            .sort_values("qtd", ascending=True)
+        )
+        if not _dist.empty:
+            try:
+                fig = px.bar(
+                    _dist, x="qtd", y="status", orientation="h",
+                    text="qtd", color="status",
+                    color_discrete_map={
+                        "Em Espera":  "#7c3aed",
+                        "Ativo":      "#00d4ff",
+                        "🛑 Parado":  "#ff9f43",
+                        "Cancelado":  "#ff4d4d",
+                        "Concluído":  "#4dff4d",
+                    },
+                )
+                fig.update_traces(textposition="outside")
+                fig.update_layout(
+                    showlegend=False, height=280,
+                    margin=dict(l=0, r=30, t=10, b=10),
+                    xaxis_title=None, yaxis_title=None,
+                )
+                _estiliza_plotly(fig)
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception:
+                st.info(
+                    "Distribuição: "
+                    f"{dict(zip(_dist['status'], _dist['qtd']))}"
+                )
+
+        # Distribuição por tag (top 5)
+        _tag_count = {}
+        for _, row in df_r.iterrows():
+            for t in db.parse_tags(row.get("tags")):
+                _tag_count[t] = _tag_count.get(t, 0) + 1
+        if _tag_count:
+            st.markdown("**🏷 Top tags em uso:**")
+            _top_tags = sorted(
+                _tag_count.items(), key=lambda x: -x[1]
+            )[:5]
+            for tag, qtd in _top_tags:
+                st.markdown(
+                    f"• {_render_tag_chips(tag, small=True)} — "
+                    f"<small>{qtd} projeto(s)</small>",
+                    unsafe_allow_html=True,
+                )
+
+
+# ══════════════════════════════════════════════════════════════════════
+# UI principal da aba Kanban
+# ══════════════════════════════════════════════════════════════════════
+st.header("📋 Controle de Fluxo")
+
+# ── BUSCA + FILTRO DE TAGS ───────────────────────────────────
+col_busca, col_tags = st.columns([3, 2])
+busca_kanban = col_busca.text_input(
+    "🔍 Buscar por nome, projetista ou cliente",
+    placeholder="ex.: residencial silva, joão, prefeitura...",
+    key="kanban_search",
+)
+_todas_tags_kanban = db.listar_tags_existentes()
+tags_filtro = col_tags.multiselect(
+    "🏷 Filtrar por tags",
+    options=_todas_tags_kanban,
+    default=[],
+    key="kanban_tags_filter",
+    help=(
+        "Mostra apenas projetos que contêm TODAS as tags selecionadas. "
+        "Vazio = não filtra."
+    ),
+    placeholder=(
+        "(qualquer tag)" if _todas_tags_kanban
+        else "Nenhuma tag cadastrada ainda"
+    ),
+    disabled=not _todas_tags_kanban,
+)
+
+if busca_kanban:
+    termo = busca_kanban.lower().strip()
+    mask = (
+        df_p["projeto"].astype(str).str.lower().str.contains(termo, na=False)
+        | df_p["projetista"].astype(str).str.lower().str.contains(termo, na=False)
+        | df_p["solicitante"].astype(str).str.lower().str.contains(termo, na=False)
+    )
+    df_kanban = df_p[mask].copy()
+else:
+    df_kanban = df_p.copy() if not df_p.empty else pd.DataFrame()
+
+# Filtro de tags: projeto deve conter TODAS as tags selecionadas (AND).
+if tags_filtro and not df_kanban.empty:
+    sel_lower = {t.lower() for t in tags_filtro}
+
+    def _tem_todas(s):
+        proj_tags = {t.lower() for t in db.parse_tags(s)}
+        return sel_lower.issubset(proj_tags)
+
+    _col_tags = (
+        df_kanban["tags"] if "tags" in df_kanban.columns
+        else pd.Series([""] * len(df_kanban), index=df_kanban.index)
+    )
+    df_kanban = df_kanban[_col_tags.apply(_tem_todas)].copy()
+
+# ── 4 CARDS DE MÉTRICAS (visão executiva sobre o filtro atual) ──
+_df_metricas = (
+    df_kanban if not df_kanban.empty
+    else pd.DataFrame(columns=df_p.columns)
+)
+_hoje_metricas = datetime.now().date()
+
+
+def _eh_atrasado(row):
+    if row.get("status") != "Ativo":
+        return False
+    dt_str = row.get("data_termino") or row.get("data_fim")
+    if not dt_str:
+        return False
+    try:
+        return pd.to_datetime(str(dt_str)).date() < _hoje_metricas
+    except Exception:
+        return False
+
+
+_qtd_andamento = (
+    int((_df_metricas["status"] == "Ativo").sum())
+    if not _df_metricas.empty else 0
+)
+_qtd_espera = (
+    int((_df_metricas["status"] == "Em Espera").sum())
+    if not _df_metricas.empty else 0
+)
+_qtd_atrasados = (
+    int(_df_metricas.apply(_eh_atrasado, axis=1).sum())
+    if not _df_metricas.empty else 0
+)
+_qtd_prio_max_espera = int(
+    ((_df_metricas["status"] == "Em Espera")
+     & (_df_metricas["prioridade"].astype(str).str.strip() == "Máxima")).sum()
+) if not _df_metricas.empty else 0
+
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("🚀 Em Andamento", _qtd_andamento,
+          help="Projetos com status Ativo no filtro atual.")
+m2.metric("⏳ Em Espera", _qtd_espera,
+          help="Projetos aguardando triagem no filtro atual.")
+m3.metric("🔴 Atrasados", _qtd_atrasados,
+          delta=f"de {_qtd_andamento}" if _qtd_andamento else None,
+          delta_color="off",
+          help="Ativos cuja data de término já passou.")
+m4.metric("▲ Máxima na fila", _qtd_prio_max_espera,
+          help="Em Espera com prioridade Máxima (precisa de triagem).")
+
+st.divider()
+
+# ── TOGGLE DE VISÃO: Kanban / Lista / Resumo ─────────────────
+visao = _pill_select(
+    st, "Visão",
+    options=["Kanban", "Lista", "Resumo"],
+    default="Kanban",
+    key="kanban_visao",
+    label_visibility="collapsed",
+) or "Kanban"
+
+if visao == "Lista":
+    _render_lista_kanban(df_kanban, df_d)
+elif visao == "Resumo":
+    _render_resumo_kanban(df_kanban, df_d)
+else:
+    # ════════════════════════════════════════════════════════════
+    #  KANBAN TRADICIONAL (default)
+    # ════════════════════════════════════════════════════════════
+    ORDEM_PRIORIDADE = {"Máxima": 0, "Média": 1, "Mínima": 2, "": 3}
+
+    CONFIG_COLUNAS = [
+        {"status_db": "Em Espera",  "label_ui": "⏳ Em Espera",
+         "card_cls": "kc-espera",   "ordenar_por_prioridade": True},
+        {"status_db": "Ativo",      "label_ui": "🚀 Em Execução",
+         "card_cls": "kc-ativo",    "ordenar_por_prioridade": False},
+        {"status_db": "🛑 Parado",  "label_ui": "🛑 Parados",
+         "card_cls": "kc-parado",   "ordenar_por_prioridade": False},
+        {"status_db": "Cancelado",  "label_ui": "❌ Cancelados",
+         "card_cls": "kc-cancel",   "ordenar_por_prioridade": False},
+        {"status_db": "Concluído",  "label_ui": "✅ Concluídos",
+         "card_cls": "kc-conc",     "ordenar_por_prioridade": False},
+    ]
+
+    # CSS uniforme para os cards do Kanban
+    st.markdown("""
+    <style>
+    .kc {
+        border-radius: 8px;
+        border-left: 4px solid var(--kc-border, #888);
+        color: #fff;
+        background: var(--kc-bg, #444);
+        overflow: hidden;
+    }
+    .kc.kc-d-c { padding: 6px 8px; font-size: 11px;   line-height: 1.3;
+                 margin-bottom: 5px; }
+    .kc.kc-d-n { padding: 9px 11px; font-size: 12.5px; line-height: 1.4;
+                 margin-bottom: 7px; }
+    .kc.kc-d-e { padding: 12px 14px; font-size: 13.5px; line-height: 1.5;
+                 margin-bottom: 10px; }
+    .kc.kc-d-c .nome { font-size:11.5px; }
+    .kc.kc-d-n .nome { font-size:13px; }
+    .kc.kc-d-e .nome { font-size:14.5px; }
+    .kc.kc-d-c .meta { font-size:10px; }
+    .kc.kc-d-n .meta { font-size:11.5px; }
+    .kc.kc-d-e .meta { font-size:12.5px; }
+
+    .kc-espera { --kc-bg:#3b1f6e; --kc-border:#7c3aed; }
+    .kc-ativo  { --kc-bg:#0d3d75; --kc-border:#00d4ff; }
+    .kc-parado { --kc-bg:#7c3a0a; --kc-border:#ff9f43; }
+    .kc-cancel { --kc-bg:#5c1414; --kc-border:#ff4d4d; }
+    .kc-conc   { --kc-bg:#143d14; --kc-border:#4dff4d; }
+    .kc .row1 { display:flex; gap:4px; flex-wrap:wrap; align-items:center;
+                margin-bottom: 3px; min-height: 14px; }
+    .kc .nome { font-weight:700; margin:2px 0; word-break: break-word; }
+    .kc .meta { opacity:.85; margin-top:2px; word-break: break-word; }
+    .kc .tags { margin-top:4px; line-height:1.6; }
+    .kc-pri-max  { background:#ef4444; color:#fff; font-size:9px;
+                   font-weight:700; padding:1px 6px; border-radius:5px;
+                   letter-spacing:.3px; }
+    .kc-pri-med  { background:#f59e0b; color:#fff; font-size:9px;
+                   font-weight:700; padding:1px 6px; border-radius:5px;
+                   letter-spacing:.3px; }
+    .kc-pri-min  { background:#10b981; color:#fff; font-size:9px;
+                   font-weight:700; padding:1px 6px; border-radius:5px;
+                   letter-spacing:.3px; }
+    .kc-alerta   { background:#ff4d4d; color:#fff; font-size:9px;
+                   font-weight:700; padding:1px 6px; border-radius:5px;
+                   letter-spacing:.3px; }
+    .kc-col-header {
+        position: sticky; top: 0;
+        background: var(--background-color, #0e1117);
+        z-index: 5;
+        font-size: 13px; font-weight:700; margin: 0 0 6px;
+        padding: 6px 4px;
+        border-bottom: 1px solid rgba(255,255,255,.08);
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # ── TOOLBAR: densidade + collapse finalizados ────────────────
+    tb1, tb2, _tb3 = st.columns([1.2, 1.2, 2])
+    densidade = _pill_select(
+        tb1, "Densidade",
+        options=["Compacto", "Normal", "Expandido"],
+        default="Normal",
+        key="kanban_densidade",
+        label_visibility="collapsed",
+        help="Espaçamento dos cards. Compacto = mais cards visíveis.",
+    )
+    _density_cls_map = {
+        "Compacto": "kc-d-c", "Normal": "kc-d-n", "Expandido": "kc-d-e",
+    }
+    _density_cls = _density_cls_map.get(densidade or "Normal", "kc-d-n")
+
+    mostrar_finalizados = tb2.toggle(
+        "Mostrar finalizados",
+        value=False,
+        key="kanban_show_done",
+        help="Inclui colunas ❌ Cancelados e ✅ Concluídos no quadro.",
+    )
+
+    # ── COLUNAS DO KANBAN (3 ou 5, dependendo do toggle) ─────────
+    COLUNAS_FINAIS = {"Cancelado", "Concluído"}
+    configs_visiveis = [
+        c for c in CONFIG_COLUNAS
+        if mostrar_finalizados or c["status_db"] not in COLUNAS_FINAIS
+    ]
+    colunas_ui = st.columns(len(configs_visiveis))
+
+    # Altura do container scrollable. 75vh aprox = cada coluna rola sozinha.
+    ALTURA_COL = 700
+
+    for cfg, coluna in zip(configs_visiveis, colunas_ui):
+        with coluna:
+            if not df_kanban.empty:
+                items = df_kanban[df_kanban["status"] == cfg["status_db"]].copy()
+            else:
+                items = pd.DataFrame()
+
+            # Ordenação por prioridade na coluna Em Espera
+            if cfg["ordenar_por_prioridade"] and not items.empty:
+                items["_ord_pri"] = items["prioridade"].map(
+                    lambda x: ORDEM_PRIORIDADE.get(str(x).strip(), 3)
+                )
+                items = items.sort_values("_ord_pri")
+
+            # Header da coluna FORA do container scrollable
+            st.markdown(
+                f"<div class='kc-col-header'>{cfg['label_ui']} "
+                f"<span style='opacity:.6;font-weight:500;'>"
+                f"({len(items)})</span></div>",
+                unsafe_allow_html=True,
+            )
+
+            with st.container(height=ALTURA_COL, border=False):
+                if items.empty:
+                    st.markdown(
+                        "<div style='color:#6b7280;font-size:11px;"
+                        "border:1px dashed rgba(255,255,255,0.1);"
+                        "border-radius:6px;padding:8px;text-align:center;'>"
+                        "Nenhum projeto</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                for _, p in items.iterrows():
+                    pend_abertas = (
+                        df_d[
+                            (df_d["projeto_id"] == p["id"])
+                            & (df_d["resolvido"] == 0)
+                        ] if not df_d.empty else pd.DataFrame()
+                    )
+                    texto_diario = (
+                        " ".join(pend_abertas["executado"].astype(str))
+                        if not pend_abertas.empty else ""
+                    )
+                    tem_trava = any(
+                        x in texto_diario
+                        for x in ["Impedimento", "Dúvida", "🛑", "❓"]
+                    )
+                    badge_alerta = (
+                        "<span class='kc-alerta'>⚠ TRAVA</span>"
+                        if tem_trava else ""
+                    )
+
+                    pri = str(p.get("prioridade", "")).strip()
+                    if pri == "Máxima":
+                        badge_pri = "<span class='kc-pri-max'>▲ MÁX</span>"
+                    elif pri == "Média":
+                        badge_pri = "<span class='kc-pri-med'>◆ MÉD</span>"
+                    elif pri == "Mínima":
+                        badge_pri = "<span class='kc-pri-min'>▼ MÍN</span>"
+                    else:
+                        badge_pri = ""
+
+                    prazo_str = str(
+                        p.get("data_fim", "") or p.get("data_termino", "") or "—"
+                    )
+
+                    _tags_html = _render_tag_chips(p.get("tags"), small=True)
+                    _tags_wrap = (
+                        f'<div class="tags">{_tags_html}</div>'
+                        if _tags_html else ""
+                    )
+
+                    card_html = (
+                        f'<div class="kc {cfg["card_cls"]} {_density_cls}">'
+                        f'<div class="row1">{badge_alerta}{badge_pri}</div>'
+                        f'<div class="nome">{p["projeto"]}</div>'
+                        f'<div class="meta">👤 {p["projetista"]} · 📅 {prazo_str}</div>'
+                        f'{_tags_wrap}'
+                        f'</div>'
+                    )
+                    st.markdown(card_html, unsafe_allow_html=True)
+
+                    # Ações em popover único
+                    status_db = cfg["status_db"]
+                    with st.popover("⚙️", use_container_width=True,
+                                    help="Ações e detalhes"):
+                        if st.button(
+                            "🔍 Abrir detalhes / editar",
+                            key=f"ver_{p['id']}",
+                            use_container_width=True,
+                        ):
+                            st.session_state.projeto_em_edicao = p["id"]
+                            st.rerun()
+
+                        if _pode_editar():
+                            st.divider()
+                            if status_db == "Em Espera":
+                                if st.button(
+                                    "▶️ Mover para Em Execução",
+                                    key=f"ativ_{p['id']}",
+                                    use_container_width=True,
+                                ):
+                                    db.atualizar_campo_projeto(
+                                        p["id"], "status", "Ativo"
+                                    )
+                                    db.log_aud(usuario, "status", "projeto",
+                                               p["id"], "Em Espera → Ativo")
+                                    _invalidar_dados()
+                                    st.rerun()
+                                if st.button(
+                                    "❌ Cancelar projeto",
+                                    key=f"canc_esp_{p['id']}",
+                                    use_container_width=True,
+                                ):
+                                    db.atualizar_campo_projeto(
+                                        p["id"], "status", "Cancelado"
+                                    )
+                                    _invalidar_dados()
+                                    st.rerun()
+                            elif status_db == "Ativo":
+                                if st.button(
+                                    "⏸️ Pausar projeto",
+                                    key=f"p_{p['id']}",
+                                    use_container_width=True,
+                                ):
+                                    db.atualizar_campo_projeto(
+                                        p["id"], "status", "🛑 Parado"
+                                    )
+                                    _invalidar_dados()
+                                    st.rerun()
+                                if st.button(
+                                    "✅ Concluir projeto",
+                                    key=f"f_{p['id']}",
+                                    use_container_width=True,
+                                ):
+                                    db.atualizar_campo_projeto(
+                                        p["id"], "status", "Concluído"
+                                    )
+                                    _invalidar_dados()
+                                    st.rerun()
+                            elif status_db == "🛑 Parado":
+                                if st.button(
+                                    "▶️ Retomar → Em Execução",
+                                    key=f"r_{p['id']}",
+                                    use_container_width=True,
+                                ):
+                                    db.atualizar_campo_projeto(
+                                        p["id"], "status", "Ativo"
+                                    )
+                                    _invalidar_dados()
+                                    st.rerun()
+                                if st.button(
+                                    "❌ Cancelar",
+                                    key=f"c_{p['id']}",
+                                    use_container_width=True,
+                                ):
+                                    db.atualizar_campo_projeto(
+                                        p["id"], "status", "Cancelado"
+                                    )
+                                    _invalidar_dados()
+                                    st.rerun()
+                            elif status_db == "Cancelado":
+                                if st.button(
+                                    "🔓 Reativar → Em Espera",
+                                    key=f"re_{p['id']}",
+                                    use_container_width=True,
+                                ):
+                                    db.atualizar_campo_projeto(
+                                        p["id"], "status", "Em Espera"
+                                    )
+                                    _invalidar_dados()
+                                    st.rerun()
+                            elif status_db == "Concluído":
+                                if st.button(
+                                    "🔓 Reabrir → Em Execução",
+                                    key=f"reabrir_{p['id']}",
+                                    use_container_width=True,
+                                ):
+                                    db.atualizar_campo_projeto(
+                                        p["id"], "status", "Ativo"
+                                    )
+                                    _invalidar_dados()
+                                    st.rerun()
+
+# ══════════════════════════════════════════════════════════════════════
+# CENTRAL DE EDIÇÃO (com todo o detalhamento)
+# ══════════════════════════════════════════════════════════════════════
+if "projeto_em_edicao" in st.session_state:
+    st.divider()
+    id_ed = st.session_state.projeto_em_edicao
+
+    # Recarrega sempre do banco para ter dados frescos
+    _df_ed = pd.read_sql_query(
+        "SELECT * FROM projetos WHERE id = %s",
+        db.get_engine(), params=(int(id_ed),),
+    )
+
+    if _df_ed.empty:
+        st.warning("Projeto não encontrado.")
+        del st.session_state.projeto_em_edicao
+        st.rerun()
+
+    dados = _df_ed.fillna("").iloc[0]
+
+    st.subheader(f"📝 Detalhamento e Edição: {dados['projeto']}")
+    st.markdown(_badge_status(dados.get("status", "")),
+                unsafe_allow_html=True)
+
+    def _parse_d(val):
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%Y-%m-%d %H:%M:%S"):
+            try:
+                return datetime.strptime(str(val).strip(), fmt).date()
+            except Exception:
+                pass
+        return datetime.now().date()
+
+    # ════════════════════════════════════════════════════════
+    #  FORMULÁRIO ESPELHANDO O CADASTRO DE NOVO PROJETO
+    # ════════════════════════════════════════════════════════
+    with st.form("form_edicao_v6"):
+
+        st.markdown("#### 📌 Identificação")
+        r1c1, r1c2 = st.columns(2)
+        ed_nm = r1c1.text_input("Nome do Projeto / Cliente *",
+                                value=str(dados["projeto"]))
+        ed_sei = r1c2.text_input("Nº SEI / Documento",
+                                 value=str(dados.get("numero_sei", "")),
+                                 placeholder="ex.: 2024/12345-6")
+
+        r2c1, r2c2 = st.columns(2)
+        ed_so = r2c1.text_input("Solicitante / Cliente",
+                                value=str(dados["solicitante"]))
+        ed_co = r2c2.text_input("Contato (Tel/Email)",
+                                value=str(dados["contato"]))
+
+        r3c1, r3c2 = st.columns(2)
+        ed_ed = r3c1.text_input("Endereço da Obra",
+                                value=str(dados["endereco"]))
+        ed_li = r3c2.text_input("Link da Pasta (Drive/Nuvem)",
+                                value=str(dados["link_projeto"]))
+
+        list_u = df_u["nome"].tolist()
+        def_u = [
+            x.strip() for x in str(dados["projetista"]).split(",")
+            if x.strip() in list_u
+        ]
+        ed_eq = st.multiselect("Equipe Responsável *", list_u,
+                               default=def_u)
+
+        lista_pri = ["Máxima", "Média", "Mínima"]
+        pri_atual = str(dados.get("prioridade", "Média")).strip()
+
+        ed_r4c1, ed_r4c2 = st.columns([1, 2])
+        ed_pr = ed_r4c1.selectbox(
+            "Prioridade", lista_pri,
+            index=lista_pri.index(pri_atual) if pri_atual in lista_pri else 1,
+        )
+
+        _tags_existentes_e = db.listar_tags_existentes()
+        _tags_atuais_csv = str(dados.get("tags") or "")
+        ed_tags = ed_r4c2.text_input(
+            "🏷 Tags (separadas por vírgula)",
+            value=_tags_atuais_csv,
+            placeholder=(
+                ", ".join(_tags_existentes_e[:3]) if _tags_existentes_e
+                else "Crítico, Aprovado"
+            ),
+            help=(
+                "Etiquetas livres pra agrupar projetos. "
+                + (f"Já em uso: {', '.join(_tags_existentes_e)}."
+                   if _tags_existentes_e else "")
+            ),
+        )
+
+        st.markdown("#### 📅 Datas")
+        dc1, dc2, dc3, dc4 = st.columns(4)
+        ed_drec = dc1.date_input(
+            "Data de Recebimento",
+            value=_parse_d(dados.get("data_recebimento")),
+        )
+        ed_prev = dc2.date_input(
+            "Previsão de Execução",
+            value=_parse_d(dados.get("previsao_execucao")),
+        )
+        ed_di = dc3.date_input(
+            "Data de Início",
+            value=_parse_d(dados.get("data_inicio")),
+        )
+        ed_dt = dc4.date_input(
+            "Data de Término",
+            value=_parse_d(
+                dados.get("data_termino") or dados.get("data_fim")
+            ),
+        )
+
+        st.markdown("#### 📋 Escopo e Disciplinas")
+        _discs_salvas = [
+            d.strip() for d in
+            str(dados.get("demandas", "")).split("|")[0].split(",")
+            if d.strip()
+        ]
+        _lista_chk = list(dict.fromkeys(
+            st.session_state.get("lista_checklist", []) + _discs_salvas
+        ))
+        ed_chk = st.multiselect(
+            "Disciplinas do Projeto",
+            options=_lista_chk,
+            default=[d for d in _discs_salvas if d in _lista_chk],
+        )
+
+        ed_esc = st.text_area("Descrição do Escopo",
+                              value=str(dados["solicitacao"]), height=90)
+        _dem_extra = (
+            str(dados.get("demandas", "")).split("|")[-1].strip()
+            if "|" in str(dados.get("demandas", "")) else ""
+        )
+        ed_dem = st.text_area("Checklist Adicional / Demandas",
+                              value=_dem_extra, height=70)
+
+        # ── BOTÕES ──────────────────────────────────────────
+        f_c1, f_c2, f_c3, f_c4 = st.columns(4)
+
+        _salvar = f_c1.form_submit_button("💾 Salvar e Sair",
+                                          use_container_width=True)
+        _clonar = f_c2.form_submit_button(
+            "📋 Clonar projeto",
+            use_container_width=True,
+            help=(
+                "Cria um novo projeto copiando dados básicos + estrutura "
+                "de etapas. Não copia diário, arquivos nem progresso."
+            ),
+        )
+        _excluir = f_c3.form_submit_button("🗑️ Excluir Projeto",
+                                           use_container_width=True)
+        _fechar = f_c4.form_submit_button("❌ Fechar",
+                                          use_container_width=True)
+
+        confirmar_del = st.checkbox(
+            f"⚠️ Confirmo EXCLUIR permanentemente '{dados['projeto']}'",
+            key=f"conf_del_{id_ed}",
+        )
+
+    # ── Ações dos botões ─────────────────────────────────────
+    if _salvar:
+        equipe_str = ", ".join(ed_eq)
+        checklist_final = (
+            ", ".join(ed_chk)
+            + (" | " + ed_dem if ed_dem.strip() else "")
+        )
+        dados_finais = (
+            equipe_str, ed_nm, ed_ed, ed_so, ed_co,
+            ed_sei, ed_drec, ed_di, ed_dt, ed_dt,
+            ed_li, checklist_final, ed_esc, ed_pr,
+        )
+        db.atualizar_projeto_completo(id_ed, dados_finais)
+        # Tags vão num UPDATE separado pra não quebrar a assinatura fixa
+        # de `atualizar_projeto_completo` (14 valores, compat).
+        _tags_csv_save = db.serializar_tags(db.parse_tags(ed_tags)) or None
+        db.atualizar_campo_projeto(id_ed, "tags", _tags_csv_save)
+        db.log_aud(usuario, "editar", "projeto", id_ed,
+                   f"nome='{ed_nm}' tags='{_tags_csv_save or ''}'")
+        del st.session_state.projeto_em_edicao
+        _invalidar_dados()
+        st.rerun()
+
+    if _excluir:
+        if not confirmar_del:
+            st.warning("Marque a caixa de confirmação antes de excluir.")
+        else:
+            db.excluir_projeto(id_ed)
+            db.log_aud(usuario, "excluir", "projeto", id_ed,
+                       f"nome='{dados['projeto']}'")
+            del st.session_state.projeto_em_edicao
+            _invalidar_dados()
+            st.rerun()
+
+    if _clonar:
+        novo_id = db.clonar_projeto(id_ed)
+        if novo_id:
+            db.log_aud(
+                usuario, "clonar", "projeto", id_ed,
+                f"origem='{dados['projeto']}' -> novo_id={novo_id}",
+            )
+            _invalidar_dados()
+            st.success(
+                f"📋 Projeto clonado! Novo id={novo_id} criado em "
+                f"**Em Espera**. Abrindo edição pra você ajustar "
+                f"nome/datas/equipe."
+            )
+            st.session_state.projeto_em_edicao = int(novo_id)
+            st.rerun()
+        else:
+            st.error(
+                "Não foi possível clonar o projeto. "
+                "Veja o log do servidor pra detalhes."
+            )
+
+    if _fechar:
+        del st.session_state.projeto_em_edicao
+        st.rerun()
+
+    # ════════════════════════════════════════════════════════
+    #  ETAPAS DO PROJETO (edição inline)
+    # ════════════════════════════════════════════════════════
+    st.markdown("### 🏁 Etapas do Projeto")
+
+    _key_et = f"etapas_edit_{id_ed}"
+    if _key_et not in st.session_state:
+        st.session_state[_key_et] = db.listar_etapas(id_ed)
+
+    _et_list = st.session_state[_key_et]
+
+    _COLS_ET = [0.5, 2.5, 1.2, 1.5, 0.7]
+
+    with st.form(f"form_etapas_{id_ed}"):
+        novas_etapas = []
+        _del_et = None
+
+        if not _et_list:
+            st.markdown(
+                "<div style='border:1px dashed rgba(255,255,255,0.12);"
+                "border-radius:8px;padding:18px;text-align:center;"
+                "color:#6b7280;font-size:13px;'>"
+                "Nenhuma etapa cadastrada ainda.<br>"
+                "<small>Clique em <b>+ Adicionar Etapa</b> abaixo pra "
+                "começar.</small></div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            h0, h1, h2, h3, h4 = st.columns(_COLS_ET)
+            h0.markdown("<small style='color:#94a3b8'>Ord.</small>",
+                        unsafe_allow_html=True)
+            h1.markdown("<small style='color:#94a3b8'>Nome da Etapa</small>",
+                        unsafe_allow_html=True)
+            h2.markdown(
+                "<small style='color:#94a3b8'>Duração (dias)</small>",
+                unsafe_allow_html=True,
+            )
+            h3.markdown(
+                "<small style='color:#94a3b8'>"
+                "Início (dias após início do projeto)</small>",
+                unsafe_allow_html=True,
+            )
+            h4.markdown("<small style='color:#94a3b8'>Ação</small>",
+                        unsafe_allow_html=True)
+
+            for i, et in enumerate(_et_list):
+                c0, c1, c2, c3, c4 = st.columns(_COLS_ET)
+                c0.markdown(
+                    f"<div style='padding-top:28px;text-align:center;"
+                    f"color:#64748b;font-weight:700;'>{i+1}</div>",
+                    unsafe_allow_html=True,
+                )
+                n = c1.text_input("Nome", value=str(et.get("nome", "")),
+                                  label_visibility="collapsed",
+                                  key=f"etn_{id_ed}_{i}")
+                d = c2.number_input("Dur",
+                                    value=int(et.get("duracao_dias", 1)),
+                                    min_value=1,
+                                    label_visibility="collapsed",
+                                    key=f"etd_{id_ed}_{i}")
+                o = c3.number_input("Off",
+                                    value=int(et.get("dias_offset", 0)),
+                                    min_value=0,
+                                    label_visibility="collapsed",
+                                    key=f"eto_{id_ed}_{i}")
+                if c4.form_submit_button(f"🗑 #{i+1}",
+                                         use_container_width=True):
+                    _del_et = i
+                novas_etapas.append({
+                    "nome": n, "duracao_dias": d,
+                    "dias_offset": o, "ordem": i,
+                })
+
+        btn_add, btn_salvar_et = st.columns(2)
+        _add_et = btn_add.form_submit_button("➕ Adicionar Etapa",
+                                             use_container_width=True)
+        _salv_et = btn_salvar_et.form_submit_button(
+            "💾 Salvar Etapas",
+            use_container_width=True,
+            disabled=not _et_list,
+            help=(
+                "Disponível quando há etapas pra salvar"
+                if not _et_list else None
+            ),
+        )
+
+    if _del_et is not None:
+        st.session_state[_key_et].pop(_del_et)
+        acum = 0
+        for et in st.session_state[_key_et]:
+            et["dias_offset"] = acum
+            acum += et["duracao_dias"]
+        st.rerun()
+
+    if _add_et:
+        _ult = (
+            st.session_state[_key_et][-1] if st.session_state[_key_et]
+            else {"dias_offset": 0, "duracao_dias": 0}
+        )
+        st.session_state[_key_et].append({
+            "nome": f"Etapa {len(st.session_state[_key_et])+1}",
+            "duracao_dias": 5,
+            "dias_offset": _ult["dias_offset"] + _ult["duracao_dias"],
+            "ordem": len(st.session_state[_key_et]),
+        })
+        st.rerun()
+
+    if _salv_et:
+        db.salvar_etapas(
+            id_ed,
+            [e for e in novas_etapas if str(e["nome"]).strip()],
+        )
+        st.session_state[_key_et] = db.listar_etapas(id_ed)
+        st.success("Etapas salvas!")
+        st.rerun()
+
+    # Mini-Gantt das etapas
+    _et_salvas = db.listar_etapas(id_ed)
+    _di_proj = dados.get("data_inicio") or dados.get("data_fim")
+    if _et_salvas and _di_proj:
+        try:
+            _base = pd.to_datetime(str(_di_proj))
+            _rows_g2 = []
+            for et in _et_salvas:
+                _ini = _base + pd.Timedelta(days=int(et["dias_offset"]))
+                _fim = _ini + pd.Timedelta(
+                    days=max(1, int(et["duracao_dias"])) - 1
+                )
+                _rows_g2.append({"Etapa": et["nome"],
+                                 "Início": _ini, "Fim": _fim})
+            _df_g2 = pd.DataFrame(_rows_g2)
+            _fig_g2 = px.timeline(_df_g2, x_start="Início",
+                                  x_end="Fim", y="Etapa", color="Etapa")
+            _fig_g2.update_yaxes(autorange="reversed", title_text="")
+            _fig_g2.update_layout(
+                height=max(200, len(_rows_g2) * 32 + 60),
+                showlegend=False,
+                margin=dict(l=5, r=5, t=15, b=10),
+            )
+            _estiliza_plotly(_fig_g2)
+            st.plotly_chart(_fig_g2, use_container_width=True)
+        except Exception:
+            pass
+
+    # ════════════════════════════════════════════════════════
+    #  EVOLUÇÃO TÉCNICA POR DISCIPLINA
+    #  Checklist: slider 100% → checkbox marcado automaticamente
+    # ════════════════════════════════════════════════════════
+    st.markdown("### 📊 Evolução Técnica por Disciplina")
+
+    # Disciplinas vêm do campo demandas (parte antes do "|")
+    _dem_raw = str(dados.get("demandas", "")).split("|")[0]
+    disciplinas_projeto = [
+        d.strip() for d in _dem_raw.split(",") if d.strip()
+    ]
+
+    if not disciplinas_projeto:
+        st.info(
+            "Nenhuma disciplina vinculada. Adicione-as no campo "
+            "**Disciplinas do Projeto** acima e salve."
+        )
+    else:
+        df_prog = pd.read_sql(
+            "SELECT * FROM progresso_disciplinas WHERE projeto_id = %s",
+            db.get_engine(), params=(int(id_ed),),
+        )
+
+        disciplinas_no_banco = df_prog["disciplina"].tolist()
+
+        # Sincroniza disciplinas (adiciona novas, remove obsoletas)
+        _sync_needed = False
+        for _d in disciplinas_projeto:
+            if _d not in disciplinas_no_banco:
+                _c = db.conectar()
+                _cu = _c.cursor()
+                _cu.execute(
+                    "INSERT INTO progresso_disciplinas "
+                    "(projeto_id, disciplina, concluido, percentual) "
+                    "VALUES (%s,%s,%s,%s)",
+                    (int(id_ed), _d, 0, 0),
+                )
+                _c.commit()
+                _c.close()
+                _sync_needed = True
+
+        for _d in disciplinas_no_banco:
+            if _d not in disciplinas_projeto:
+                _c = db.conectar()
+                _cu = _c.cursor()
+                _cu.execute(
+                    "DELETE FROM progresso_disciplinas "
+                    "WHERE projeto_id=%s AND disciplina=%s",
+                    (int(id_ed), _d),
+                )
+                _c.commit()
+                _c.close()
+                _sync_needed = True
+
+        if _sync_needed:
+            st.rerun()
+
+        with st.form(key=f"check_evolucao_{id_ed}"):
+            c_check, c_prog = st.columns([1.3, 1])
+            novos_vals = []
+
+            with c_check:
+                st.markdown(
+                    "<div style='margin-bottom:6px;font-size:.78rem;"
+                    "color:#94a3b8;display:flex;gap:32px;padding-left:4px;'>"
+                    "<span>✔ Concluído</span>"
+                    "<span style='margin-left:8px'>Progresso (%)</span>"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+                for _, row in df_prog.iterrows():
+                    if row["disciplina"] not in disciplinas_projeto:
+                        continue
+
+                    _st_banco = bool(row["concluido"])
+                    _per_banco = int(row["percentual"])
+
+                    col_cb, col_sl = st.columns([0.38, 0.62])
+
+                    _n_st = col_cb.checkbox(
+                        f"**{row['disciplina']}**",
+                        value=_st_banco,
+                        key=f"ch_{row['id']}",
+                    )
+                    _n_per = col_sl.slider(
+                        "Prog", 0, 100, _per_banco,
+                        key=f"sl_{row['id']}",
+                        label_visibility="collapsed",
+                    )
+
+                    # Sincronização: 100% ↔ marcado
+                    _cb_mudou = (_n_st != _st_banco)
+                    _sl_mudou = (_n_per != _per_banco)
+
+                    if _cb_mudou:
+                        _n_per = 100 if _n_st else 0
+                    elif _sl_mudou:
+                        _n_st = (_n_per == 100)
+
+                    novos_vals.append((
+                        1 if _n_st else 0,
+                        _n_per,
+                        int(row["id"]),
+                    ))
+
+            with c_prog:
+                _media = (
+                    df_prog["percentual"].mean()
+                    if not df_prog.empty else 0
+                )
+                _cor_prog = (
+                    "#10b981" if _media >= 70
+                    else "#f59e0b" if _media >= 40
+                    else "#ef4444"
+                )
+
+                with st.container(border=True):
+                    st.markdown(
+                        f"<div style='text-align:center; padding:10px 0;'>"
+                        f"<div style='font-size:2rem;font-weight:700;"
+                        f"color:{_cor_prog};line-height:1'>"
+                        f"{_media:.0f}%</div>"
+                        f"<div style='font-size:.72rem;color:#94a3b8;"
+                        f"margin-top:5px;'>progresso geral</div>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                    st.progress(min(_media / 100, 1.0))
+
+                if _media >= 100:
+                    st.success("🎉 CONCLUÍDO!")
+
+            if st.form_submit_button("🔄 Atualizar Progresso",
+                                     use_container_width=True):
+                _c = db.conectar()
+                _cu = _c.cursor()
+                for _s, _p, _i in novos_vals:
+                    _cu.execute(
+                        "UPDATE progresso_disciplinas "
+                        "SET concluido=%s, percentual=%s WHERE id=%s",
+                        (_s, _p, _i),
+                    )
+                _c.commit()
+                _c.close()
+                st.success("Evolução salva!")
+                st.rerun()
