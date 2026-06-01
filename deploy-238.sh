@@ -135,10 +135,10 @@ trap 'rm -f "$TMPLIST"' EXIT
 git ls-files > "${TMPLIST}"
 
 if [ "${DRY_RUN}" = "1" ]; then
-    echo "  ${Y}[dry-run]${N} rsync -avzc --files-from=<lista> ./ ${REMOTE_USER}@${REMOTE_HOST}:${APP_DIR}/"
+    echo "  ${Y}[dry-run]${N} rsync -avzc --rsync-path="sudo rsync" --files-from=<lista> ./ ${REMOTE_USER}@${REMOTE_HOST}:${APP_DIR}/"
     echo "  ${Y}[dry-run]${N} $(wc -l < "${TMPLIST}") arquivos seriam enviados"
 else
-    rsync -avzc --files-from="${TMPLIST}" \
+    rsync -avzc --rsync-path="sudo rsync" --files-from="${TMPLIST}" \
         ./ "${REMOTE_USER}@${REMOTE_HOST}:${APP_DIR}/"
 fi
 ok "rsync terminou"
