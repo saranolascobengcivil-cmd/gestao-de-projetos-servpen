@@ -3,12 +3,19 @@
 # Ubuntu/Debian, COM PostgreSQL como banco principal.  Idempotente: pode rodar
 # várias vezes sem perder dados.
 #
-# Uso (na pasta do projeto):
-#   sudo SERVER_IP="152.92.238.40" bash setup-novo-servidor/install.sh
+# Convenção de paths recomendada (servidor 238.40+):
+#   /var/www/setup-novo-servidor/    ← arquivos de infra (este install.sh,
+#                                       vhost.conf, .service, .timer, backup.sh)
+#   /var/www/gestao-de-projetos/     ← código da aplicação (app.py, core/,
+#                                       views/, database.py, requirements.txt)
+#
+# Uso típico (na pasta /var/www/setup-novo-servidor):
+#   sudo SERVER_IP="152.92.238.40" bash /var/www/setup-novo-servidor/install.sh
 #
 # Variáveis de ambiente (opcionais):
 #   SERVER_IP        IP público que o app vai aparecer (default: detecta)
-#   APP_DIR          Pasta do projeto (default: /var/www/html/gestao_de_projetos)
+#   APP_DIR          Pasta do projeto (default: /var/www/gestao-de-projetos)
+#   SETUP_DIR        Onde estão os arquivos de infra (default: /var/www/setup-novo-servidor)
 #   STREAMLIT_PORT   Porta interna do Streamlit (default: 8501)
 #   URL_PATH         Caminho do app no Apache (default: gestao-de-projetos)
 #   DB_NAME          Nome do banco Postgres (default: gestao_servpen)
@@ -19,7 +26,8 @@
 
 set -euo pipefail
 
-APP_DIR="${APP_DIR:-/var/www/html/gestao_de_projetos}"
+APP_DIR="${APP_DIR:-/var/www/gestao-de-projetos}"
+SETUP_DIR="${SETUP_DIR:-/var/www/setup-novo-servidor}"
 SERVICE_NAME="gestao-de-projetos"
 APACHE_CONF_NAME="gestao-de-projetos"
 STREAMLIT_PORT="${STREAMLIT_PORT:-8501}"
@@ -42,9 +50,12 @@ echo "Banco:          PostgreSQL ${DB_NAME} (usuario ${DB_USER})"
 echo "============================================================"
 
 # --- 1/13 — Pré-requisitos básicos no projeto -------------------------------
-echo "==>  1/13 Verificando ${APP_DIR}/app.py"
-test -f "${APP_DIR}/app.py" || { echo "ERRO: ${APP_DIR}/app.py não encontrado. Copie o código antes." ; exit 1; }
-test -f "${APP_DIR}/database.py" || { echo "ERRO: database.py não encontrado." ; exit 1; }
+echo "==>  1/13 Verificando estrutura em ${APP_DIR}"
+test -f "${APP_DIR}/app.py"      || { echo "ERRO: ${APP_DIR}/app.py não encontrado. Copie o código antes." ; exit 1; }
+test -f "${APP_DIR}/database.py" || { echo "ERRO: ${APP_DIR}/database.py não encontrado." ; exit 1; }
+# Estrutura modular nova (após refatoração maio/2026):
+test -d "${APP_DIR}/core"        || { echo "ERRO: ${APP_DIR}/core/ não encontrado. Versão modular requerida." ; exit 1; }
+test -d "${APP_DIR}/views"       || { echo "ERRO: ${APP_DIR}/views/ não encontrado. Versão modular requerida." ; exit 1; }
 
 # --- 2/13 — Backup dos bancos SQLite legados antes de migrar ----------------
 echo "==>  2/13 Backup dos bancos SQLite legados (se existirem)"
@@ -258,8 +269,14 @@ fi
 
 # --- 11/13 — systemd + Apache ----------------------------------------------
 echo "==> 11/13 Instalando systemd unit + vhost Apache"
-DEPLOY_SRC="${APP_DIR}/setup-novo-servidor"
+# Ordem de busca pelo diretório com os arquivos de infra:
+#   1. SETUP_DIR  (recomendado: /var/www/setup-novo-servidor — separado do app)
+#   2. APP_DIR/setup-novo-servidor (compat: setup junto do app)
+#   3. APP_DIR/deploy (legado)
+DEPLOY_SRC="${SETUP_DIR}"
+[ -f "${DEPLOY_SRC}/${SERVICE_NAME}.service" ] || DEPLOY_SRC="${APP_DIR}/setup-novo-servidor"
 [ -f "${DEPLOY_SRC}/${SERVICE_NAME}.service" ] || DEPLOY_SRC="${APP_DIR}/deploy"
+echo "     usando arquivos de infra em: ${DEPLOY_SRC}"
 
 # systemd — substitui __APP_DIR__ pelo caminho real
 sed "s|__APP_DIR__|${APP_DIR}|g" "${DEPLOY_SRC}/${SERVICE_NAME}.service" \
