@@ -15,6 +15,19 @@ import streamlit.components.v1 as _components
 import database as db
 
 
+# Slugs das páginas em `st.navigation` — deve refletir o `url_path` declarado
+# em `app.py`. Usado pelo JS do toast pra detectar "estou em /diario ou /
+# (dashboard default)?" e construir a URL alvo `<base>/chat?_goto_chat=NOME`
+# corretamente, independente da página onde o user está.
+#
+# Dashboard NÃO entra aqui — é a página default, seu slug é "" (URL = base).
+_PAGE_SLUGS = [
+    "kanban", "novo_projeto", "diario", "arquivos",
+    "equipe", "chat", "agenda", "auditoria", "acessos",
+]
+_CHAT_SLUG = "chat"
+
+
 def _chat_toast_html(remetente: str, qtd: int):
     """Injeta um toast persistente (30s) no DOM pai via JS.
 
@@ -23,13 +36,21 @@ def _chat_toast_html(remetente: str, qtd: int):
     `window.parent`, simulando um toast estilo WhatsApp/Telegram, com botões
     "✖ Fechar" e "📨 Ver mensagem".
 
-    O link "Ver mensagem" usa `<a target="_top" href="?_goto_chat=NOME">`
-    porque o iframe do components.html é sandboxed sem `allow-top-navigation`
-    — JS via `window.parent.location` dispara SecurityError. Link com
-    target=_top + clique do user passa pelo bloqueio (user-activated nav).
+    O link "Ver mensagem" usa `<a target="_top" href="...">` porque o iframe
+    do components.html é sandboxed sem `allow-top-navigation` — JS via
+    `window.parent.location` dispara SecurityError. Link com target=_top +
+    clique do user passa pelo bloqueio (user-activated nav).
+
+    A URL alvo é construída pra apontar pra `<base>/chat?_goto_chat=NOME`
+    INDEPENDENTE da página onde o user está quando o toast aparece. Sem
+    isso (versão antiga, pré-modularização), o clique adicionava
+    `?_goto_chat=NOME` à URL atual — o que com `st.navigation` fazia o user
+    cair em `/dashboard?_goto_chat=X` em vez de `/chat?_goto_chat=X`.
     """
     _rem_js = _json.dumps(str(remetente))  # escape correto pro JS
     _qtd_js = int(qtd)
+    _slugs_js = _json.dumps(_PAGE_SLUGS)
+    _chat_slug_js = _json.dumps(_CHAT_SLUG)
     _components.html(
         f"""
         <script>
@@ -38,6 +59,8 @@ def _chat_toast_html(remetente: str, qtd: int):
                 var doc = window.parent.document;
                 var REM = {_rem_js};
                 var QTD = {_qtd_js};
+                var KNOWN_SLUGS = {_slugs_js};
+                var CHAT_SLUG = {_chat_slug_js};
 
                 // CSS injetado uma vez só
                 if (!doc.getElementById('wa-toast-styles')) {{
@@ -123,17 +146,42 @@ def _chat_toast_html(remetente: str, qtd: int):
                 toast.querySelector('.wa-toast-head b').textContent = REM;
                 toast.querySelector('.qtd').textContent = QTD;
 
-                // URL final pro link "Ver mensagem". Preserva query params
-                // atuais (?t=token etc.) e adiciona _goto_chat=NOME.
+                // URL final pro link "Ver mensagem".
+                //
+                // ALGORITMO:
+                //   1. Pega o pathname atual (ex.: "/gestao-de-projetos/diario"
+                //      ou "/gestao-de-projetos/" ou "/" em dev local).
+                //   2. Tira a barra final.
+                //   3. Olha o último segmento:
+                //      - se for um slug de página conhecido (kanban, diario,
+                //        agenda, etc.) → substitui por "chat"
+                //      - se NÃO for (é a base do app, dashboard default
+                //        renderiza em "/") → ANEXA "/chat" no fim
+                //   4. Mantém todos os query params atuais (?t=token etc.)
+                //      e adiciona ?_goto_chat=NOME.
+                //
+                // Resultado: clique no toast SEMPRE leva pra <base>/chat,
+                // não importa em qual página o user esteja.
                 try {{
                     var urlGo = new URL(window.parent.location.href);
+                    var pathname = urlGo.pathname.replace(/\\/$/, '');
+                    var parts = pathname.split('/');
+                    var last = parts[parts.length - 1];
+                    if (KNOWN_SLUGS.indexOf(last) !== -1) {{
+                        parts[parts.length - 1] = CHAT_SLUG;
+                    }} else {{
+                        parts.push(CHAT_SLUG);
+                    }}
+                    urlGo.pathname = parts.join('/');
                     urlGo.searchParams.set('_goto_chat', REM);
                     toast.querySelector('.wa-btn-go')
                          .setAttribute('href', urlGo.toString());
                 }} catch (e) {{
+                    // Fallback minimalista. Perde token + base path, mas pelo
+                    // menos tenta levar pra alguma URL de chat.
                     toast.querySelector('.wa-btn-go')
                          .setAttribute('href',
-                             '?_goto_chat=' + encodeURIComponent(REM));
+                             'chat?_goto_chat=' + encodeURIComponent(REM));
                 }}
 
                 // Botão ✖ fecha

@@ -578,19 +578,42 @@ with st.sidebar:
 # a cada interação do usuário — esse é o ganho principal vs st.tabs
 # (que rodava as 10 abas a cada clique). Streamlit 1.36+ obrigatório.
 
+#
+# IMPORTANTE — `url_path` explícito em todas as páginas (exceto a default).
+# Sem isso, o Streamlit infere o slug do filename. Funcionaria, mas seria
+# implícito. Aqui fixamos pra:
+#   1) URL estável mesmo se renomear o arquivo
+#   2) Toast de "📨 Ver mensagem" no chat poder navegar pra `<base>/chat`
+#      direto (ver core/notif.py — o JS precisa do slug "chat").
+#   3) `core/notif.py:KNOWN_SLUGS` reflete EXATAMENTE essa lista. Se mudar
+#      um url_path aqui, atualize lá também.
+#
+# Convenção: lowercase ASCII com underscore (sem acentos, sem hífen). O
+# JavaScript do toast detecta "qual é o slug atual" comparando o último
+# segmento do pathname com essa lista.
 _pages_gerais = [
-    st.Page("views/dashboard.py", title="Dashboard", icon="📊", default=True),
-    st.Page("views/kanban.py", title="Kanban", icon="📋"),
-    st.Page("views/novo_projeto.py", title="Novo Projeto", icon="➕"),
-    st.Page("views/diario.py", title="Diário", icon="📝"),
-    st.Page("views/arquivos.py", title="Arquivos", icon="📁"),
-    st.Page("views/equipe.py", title="Equipe", icon="👥"),
-    st.Page("views/chat.py", title="Chat", icon="💬"),
-    st.Page("views/agenda.py", title="Agenda", icon="📅"),
+    st.Page("views/dashboard.py", title="Dashboard", icon="📊",
+            default=True),  # default → URL = base do app (sem slug)
+    st.Page("views/kanban.py", title="Kanban", icon="📋",
+            url_path="kanban"),
+    st.Page("views/novo_projeto.py", title="Novo Projeto", icon="➕",
+            url_path="novo_projeto"),
+    st.Page("views/diario.py", title="Diário", icon="📝",
+            url_path="diario"),
+    st.Page("views/arquivos.py", title="Arquivos", icon="📁",
+            url_path="arquivos"),
+    st.Page("views/equipe.py", title="Equipe", icon="👥",
+            url_path="equipe"),
+    st.Page("views/chat.py", title="Chat", icon="💬",
+            url_path="chat"),
+    st.Page("views/agenda.py", title="Agenda", icon="📅",
+            url_path="agenda"),
 ]
 _pages_gestor = [
-    st.Page("views/auditoria.py", title="Auditoria", icon="🛡️"),
-    st.Page("views/acessos.py", title="Acessos", icon="🔑"),
+    st.Page("views/auditoria.py", title="Auditoria", icon="🛡️",
+            url_path="auditoria"),
+    st.Page("views/acessos.py", title="Acessos", icon="🔑",
+            url_path="acessos"),
 ]
 
 # Gestor vê todas; Projetista/Visualizador ficam sem Auditoria/Acessos.
