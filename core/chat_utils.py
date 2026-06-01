@@ -184,10 +184,15 @@ def _render_chat_messages(usuario, contato_nome):
             # Detecta soft-delete (excluida_em IS NOT NULL).
             # Quando a mensagem foi "apagada" via excluir_mensagem_chat,
             # mostramos placeholder estilo WhatsApp em vez do texto.
+            #
+            # ATENÇÃO: NULL em coluna TIMESTAMP vira pd.NaT (NaTType), que
+            # NÃO é float. Usar `isinstance(_, float) and pd.isna(_)` falha
+            # pra NaT → marca toda msg como excluída (bug visual: parece
+            # que apagar 1 apagou todas, mas o banco só tem 1 alterada).
+            # pd.isna() cobre None, NaN E NaT de uma vez.
             _excl_raw = m.get("excluida_em") if "excluida_em" in m else None
             _foi_excluida = (
-                _excl_raw is not None
-                and not (isinstance(_excl_raw, float) and pd.isna(_excl_raw))
+                _excl_raw is not None and not pd.isna(_excl_raw)
             )
 
             # Bolha + horário compactos
@@ -205,11 +210,11 @@ def _render_chat_messages(usuario, contato_nome):
             # Marca "(editado)" se a mensagem foi modificada — estilo WhatsApp.
             # Coluna editado_em populada por editar_mensagem_chat.
             # NÃO mostra (editado) se a mensagem já foi excluída.
+            # Mesmo detalhe do excluida_em: NaT não é float, pd.isna()
+            # cobre None/NaN/NaT corretamente.
             _edit_marker = ""
             _ed_raw = m.get("editado_em") if "editado_em" in m else None
-            if (not _foi_excluida) and _ed_raw is not None and not (
-                isinstance(_ed_raw, float) and pd.isna(_ed_raw)
-            ):
+            if (not _foi_excluida) and _ed_raw is not None and not pd.isna(_ed_raw):
                 try:
                     _ed_dt = pd.to_datetime(_ed_raw, errors="coerce")
                     if pd.notna(_ed_dt):
