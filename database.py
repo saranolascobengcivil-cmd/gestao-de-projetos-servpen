@@ -703,24 +703,56 @@ def criar_tabelas():
             ("agenda",                "local",              "TEXT"),
             ("mencoes_notificacoes",  "dispensado_em",      "TIMESTAMP"),
         ]
+        # CRÍTICO: em PostgreSQL, quando uma query dentro de uma
+        # transação falha, a transação INTEIRA fica em estado "aborted"
+        # — todas as queries subsequentes erram com
+        # `InFailedSqlTransaction` até um `ROLLBACK`. Versões anteriores
+        # deste loop tinham um try/except que NÃO fazia rollback,
+        # resultando em: migration X falhava → transaction aborted →
+        # migrations Y, Z, ... todas falhavam silenciosamente → CREATE
+        # INDEX final estourava → rollback global → NENHUMA migration
+        # era aplicada. Sintoma em prod: app fica "torto", saves não
+        # funcionam, sem mensagem clara.
+        #
+        # Fix: SAVEPOINT por migration. Cada ALTER TABLE roda dentro do
+        # seu próprio savepoint; falha vira `ROLLBACK TO SAVEPOINT`,
+        # liberando a transação principal pras próximas migrations.
         for tab, col, tipo in migracoes:
             try:
-                c.execute(f"ALTER TABLE {tab} ADD COLUMN IF NOT EXISTS {col} {tipo}")
-            except Exception:
-                # PG < 9.6 não suporta IF NOT EXISTS no ALTER TABLE — fallback:
-                try:
-                    c.execute(f"ALTER TABLE {tab} ADD COLUMN {col} {tipo}")
-                except Exception:
-                    pass
+                c.execute("SAVEPOINT mig_step")
+                c.execute(
+                    f"ALTER TABLE {tab} "
+                    f"ADD COLUMN IF NOT EXISTS {col} {tipo}"
+                )
+                c.execute("RELEASE SAVEPOINT mig_step")
+            except Exception as e:
+                c.execute("ROLLBACK TO SAVEPOINT mig_step")
+                # Log pra auditoria mas NÃO derruba o boot.
+                log.warning(
+                    "migration %s.%s pulada: %s", tab, col, e
+                )
 
-        # Índice para ordenar por prioridade no kanban
-        c.execute("""CREATE INDEX IF NOT EXISTS idx_projetos_status_prior
-                     ON projetos(status, prioridade)""")
+        # Índice para ordenar por prioridade no kanban — também sob
+        # savepoint, mesmo padrão (CREATE INDEX pode falhar se a tabela
+        # `projetos` ainda não tiver a coluna `prioridade`).
+        try:
+            c.execute("SAVEPOINT idx_step")
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_projetos_status_prior "
+                "ON projetos(status, prioridade)"
+            )
+            c.execute("RELEASE SAVEPOINT idx_step")
+        except Exception as e:
+            c.execute("ROLLBACK TO SAVEPOINT idx_step")
+            log.warning("CREATE INDEX idx_projetos_status_prior: %s", e)
 
         conn.commit()
     except Exception as e:
         log.exception("Erro ao inicializar banco: %s", e)
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception:
+            pass
     finally:
         conn.close()
 
