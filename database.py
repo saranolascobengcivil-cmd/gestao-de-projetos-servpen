@@ -16,6 +16,7 @@ import logging
 import psycopg
 import hashlib
 import secrets
+import threading
 import time
 import os
 from functools import lru_cache
@@ -29,6 +30,22 @@ from sqlalchemy import create_engine
 # Logger nomeado pelo módulo. Configuração global (nível, formato, handler)
 # fica em `app.py` no boot — aqui só usamos.
 log = logging.getLogger(__name__)
+
+
+# ─── GUARD DE INICIALIZAÇÃO (1× por processo) ──────────────
+# O DDL (CREATE TABLE / ALTER TABLE) NÃO pode rodar a cada rerun do
+# Streamlit. `ALTER TABLE` pega AccessExclusiveLock (trava a tabela
+# inteira); se duas threads/abas rodam migrations concorrentemente em
+# ordem diferente, dão DEADLOCK ("Process A waits for lock held by B,
+# B waits for lock held by A"). Como `criar_tabelas()` era chamado no
+# topo de app.py (= todo rerun) e cada conexão é um backend PG distinto,
+# isso deadlockava em loop e o app ficava "horrível".
+#
+# Fix: rodar o schema UMA ÚNICA VEZ por processo Python. O Lock serializa
+# o primeiro boot entre threads concorrentes; o flag faz reruns seguintes
+# virarem no-op instantâneo (sem tocar no banco).
+_schema_lock = threading.Lock()
+_schema_pronto = False
 
 
 # ─── CONEXÃO ──────────────────────────────────────────────
@@ -446,13 +463,10 @@ def purgar_falhas_login_antigas(horas=24):
 
 # ─── SESSÕES ──────────────────────────────────────────────
 def criar_tabela_sessoes():
-    conn = conectar(); c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS sessoes (
-        token TEXT PRIMARY KEY,
-        usuario TEXT NOT NULL,
-        expires_at BIGINT NOT NULL
-    )''')
-    conn.commit(); conn.close()
+    """Stub de compatibilidade — a tabela `sessoes` agora é criada dentro
+    do init guardado `criar_tabelas()` (1× por processo). Antes era um
+    CREATE TABLE a cada rerun; agora delega ao guard."""
+    criar_tabelas()
 
 def criar_sessao(usuario, dias=7):
     token = secrets.token_urlsafe(18)
@@ -492,8 +506,30 @@ def limpar_sessoes_expiradas():
 
 # ─── CRIAÇÃO DE TABELAS / MIGRAÇÕES ───────────────────────
 def criar_tabelas():
-    """Cria todas as tabelas (CREATE IF NOT EXISTS) e adiciona colunas faltantes
-    em bancos pré-existentes via ALTER TABLE ADD COLUMN IF NOT EXISTS (PG 9.6+)."""
+    """Inicializa o schema UMA VEZ por processo (idempotente + thread-safe).
+
+    Wrapper guardado: se o schema já foi criado neste processo, retorna
+    instantâneo. Senão, adquire o lock e roda `_criar_tabelas_impl()` —
+    o double-check dentro do lock garante que, se duas threads chegarem
+    juntas no primeiro boot, só uma executa o DDL. Isso elimina o
+    deadlock de ALTER TABLE concorrente (ver comentário em _schema_lock).
+    """
+    global _schema_pronto
+    if _schema_pronto:
+        return
+    with _schema_lock:
+        if _schema_pronto:          # outra thread já fez enquanto esperávamos
+            return
+        _criar_tabelas_impl()
+        _schema_pronto = True
+
+
+def _criar_tabelas_impl():
+    """Corpo real do DDL. NÃO chamar direto — use `criar_tabelas()` (guard).
+
+    Cria todas as tabelas (CREATE IF NOT EXISTS) e adiciona colunas
+    faltantes em bancos pré-existentes via ALTER TABLE (PG 9.6+).
+    """
     conn = conectar()
     c = conn.cursor()
     try:
@@ -670,6 +706,15 @@ def criar_tabelas():
         c.execute("CREATE INDEX IF NOT EXISTS idx_login_falhas_usuario_data "
                   "ON login_falhas(usuario, criado_em)")
 
+        # ── SESSÕES (login persistente via token na URL) ──
+        # Movida pra cá (era CREATE TABLE solto em criar_tabela_sessoes,
+        # rodando a cada rerun). Agora faz parte do init guardado.
+        c.execute('''CREATE TABLE IF NOT EXISTS sessoes (
+            token TEXT PRIMARY KEY,
+            usuario TEXT NOT NULL,
+            expires_at BIGINT NOT NULL
+        )''')
+
         # ── MIGRAÇÕES INCREMENTAIS (PG 9.6+: ADD COLUMN IF NOT EXISTS) ──
         # Pra bancos pré-existentes onde a tabela já existe sem essas colunas.
         migracoes = [
@@ -703,21 +748,27 @@ def criar_tabelas():
             ("agenda",                "local",              "TEXT"),
             ("mencoes_notificacoes",  "dispensado_em",      "TIMESTAMP"),
         ]
-        # CRÍTICO: em PostgreSQL, quando uma query dentro de uma
-        # transação falha, a transação INTEIRA fica em estado "aborted"
-        # — todas as queries subsequentes erram com
-        # `InFailedSqlTransaction` até um `ROLLBACK`. Versões anteriores
-        # deste loop tinham um try/except que NÃO fazia rollback,
-        # resultando em: migration X falhava → transaction aborted →
-        # migrations Y, Z, ... todas falhavam silenciosamente → CREATE
-        # INDEX final estourava → rollback global → NENHUMA migration
-        # era aplicada. Sintoma em prod: app fica "torto", saves não
-        # funcionam, sem mensagem clara.
+        # PASSO 1: lê o schema atual via information_schema (SELECT, só
+        # pega AccessShareLock — NÃO conflita com nada). Migrations cujo
+        # par (tabela, coluna) já existe são PULADAS sem nem tentar o
+        # ALTER. Isso é o que mata o deadlock no caso comum (steady
+        # state): banco já migrado → zero ALTER → zero AccessExclusiveLock.
+        c.execute(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public'"
+        )
+        _cols_existentes = {(r[0], r[1]) for r in c.fetchall()}
+
+        # PASSO 2: aplica só as migrations que faltam.
         #
-        # Fix: SAVEPOINT por migration. Cada ALTER TABLE roda dentro do
-        # seu próprio savepoint; falha vira `ROLLBACK TO SAVEPOINT`,
-        # liberando a transação principal pras próximas migrations.
+        # SAVEPOINT por migration: em PostgreSQL, quando uma query falha
+        # dentro de uma transação, a transação INTEIRA fica "aborted" —
+        # toda query seguinte erra com InFailedSqlTransaction até um
+        # ROLLBACK. O savepoint isola cada ALTER: falha vira `ROLLBACK TO
+        # SAVEPOINT`, liberando a transação pras próximas migrations.
         for tab, col, tipo in migracoes:
+            if (tab, col) in _cols_existentes:
+                continue  # já existe — não toca (evita lock exclusivo)
             try:
                 c.execute("SAVEPOINT mig_step")
                 c.execute(
@@ -1293,16 +1344,11 @@ def total_nao_lidos_diario_visivel(usuario, projeto_ids_visiveis):
 
 # ─── STATUS Em Espera ─────────────────────────────────────
 def migrar_status_em_espera():
-    """Garante índice de prioridade para ordenação no kanban Em Espera."""
-    conn = conectar(); c = conn.cursor()
-    try:
-        c.execute("""CREATE INDEX IF NOT EXISTS idx_projetos_status_prior
-                     ON projetos(status, prioridade)""")
-        conn.commit()
-    except Exception:
-        pass
-    finally:
-        conn.close()
+    """Stub de compatibilidade. O índice idx_projetos_status_prior agora é
+    criado dentro do init guardado `criar_tabelas()`. Esta função era
+    chamada a cada boot e fazia CREATE INDEX solto (DDL redundante que
+    contribuía pro deadlock); agora delega ao guard (no-op após 1º boot)."""
+    criar_tabelas()
 
 
 # ─── MENÇÕES NO DIÁRIO ────────────────────────────────────

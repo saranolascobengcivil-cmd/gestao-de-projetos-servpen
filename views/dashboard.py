@@ -311,10 +311,17 @@ if not df_p_limpo.empty and not df_u.empty:
             if it in todos_projetistas_pizza
         ]
 
+        # IMPORTANTE: NÃO passar `default=` junto com `key=` quando a key
+        # já existe no session_state. O Streamlit não sabe qual vence (o
+        # `default=` ou o valor já presente em session_state) e emite o
+        # warning "created with a default value but also had its value
+        # set via the Session State API" — depois IGNORA o default. Como
+        # já inicializamos e limpamos st.session_state[_key_pizza_sel]
+        # acima, o widget lê o valor de lá sozinho. O `default=` era
+        # redundante e gerava o ruído no log.
         projetistas_selecionados_pizza = st.multiselect(
             "Selecione os projetistas para o gráfico de pizza:",
             options=todos_projetistas_pizza,
-            default=st.session_state[_key_pizza_sel],
             key=_key_pizza_sel,
             help=(
                 "Selecione os projetistas que deseja incluir no gráfico "

@@ -95,7 +95,13 @@ if "tema" not in st.session_state:
 # A tabela 'sessoes' armazena tokens opacos (24 chars) associados a cada
 # usuário logado. Token vai no query param `?t=...` → sobrevive F5 e
 # fechar/abrir navegador. Logout deleta a linha do banco (invalidação real).
-db.criar_tabela_sessoes()
+#
+# `criar_tabelas()` é o init guardado (1× por processo) — cria TODAS as
+# tabelas incluindo `sessoes`. As chamadas redundantes que existiam aqui
+# (criar_tabela_sessoes, criar_tabela_agenda, etc.) foram removidas: cada
+# uma chamava criar_tabelas() de novo, e rodar DDL a cada rerun com
+# conexões concorrentes causava DEADLOCK de ALTER TABLE. Agora é 1 chamada.
+db.criar_tabelas()
 db.limpar_sessoes_expiradas()
 
 # Toast custom "📨 Ver mensagem" navega via `?_goto_chat=NOME`. Lemos aqui
@@ -153,17 +159,13 @@ if (
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 5. INICIALIZAÇÃO DO BANCO E PASTAS
+# 5. PASTAS
 # ═══════════════════════════════════════════════════════════════════════
-db.criar_tabelas()
-db.criar_tabela_agenda()
-db.criar_tabela_progresso()
-db.criar_tabela_arquivos()
-db.criar_tabela_auditoria()
-db.criar_tabela_mencoes()
-db.criar_tabela_diario_leituras()
-db.migrar_status_em_espera()
-
+# O schema do banco já foi inicializado acima por `db.criar_tabelas()`
+# (init guardado, roda 1× por processo). Não repetir aqui — os antigos
+# db.criar_tabela_agenda()/progresso()/arquivos()/... eram stubs que
+# chamavam criar_tabelas() de novo (redundante) e o
+# migrar_status_em_espera() recriava um índice que criar_tabelas() já faz.
 if not os.path.exists("anexos"):
     os.makedirs("anexos")
 
